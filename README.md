@@ -28,4 +28,3 @@ This project is compiled with version 7.1 of the Windows SDK.
 - Doesn't connect to Discord yet
 - Server icons are shown in low color
 - There is an issue with expanding and collapsing channel categories when the window is resized after collapsing one.
-- When the last category (closest to the bottom) in a server is collapsed, all but the first channel in the group remain visible

@@ -1431,6 +1431,17 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 						}
 						startingChannelWithinGroup = -1; // We have to set this or only the first channel group will be drawn.
 					}
+					
+					//If the last channel group is collapsed, we need to erase the spaces that should now be empty
+					SetDCPenColor(hdc, sidebarColor);
+					SelectObject(hdc, sidebarColorBrush);
+					SetDCPenColor(hdc, sidebarColor);
+					SetBkColor(hdc, sidebarColor);
+					while (((idx * 32) + 50) <= h) {
+						Rectangle(hdc, 0, (idx * 32) + 50, 232, (idx * 32) + 50 + 32 + 32);
+						idx++;
+					}
+					
 					//We have to delete the icon device context or the wrong icons will be drawn if the window is minimized and restored.
 					DeleteDC(iconHDC);
 				}
