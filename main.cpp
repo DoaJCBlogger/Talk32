@@ -1310,6 +1310,15 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 							SetDCPenColor(hdc, sidebarColor);
 							SetBkColor(hdc, sidebarColor);
 							SelectObject(hdc, channelGroupNameFont);
+							
+							//Clear any background that may have been drawn before
+							//serverListHoverColor, serverListSelectedColor
+							SetDCPenColor(hdc, sidebarColor);
+							SelectObject(hdc, sidebarColorBrush);
+							SetDCPenColor(hdc, sidebarColor);
+							SetBkColor(hdc, sidebarColor);
+							Rectangle(hdc, 0, (idx * 32) + 50, 232, (idx * 32) + 50 + 32 + 32);
+							
 							ExtTextOut(hdc, 12, (idx * 32) + 50 + 7 + 8, NULL, NULL, pData->dataModel.at(i).name.c_str(), pData->dataModel.at(i).name.length(), NULL);
 							
 							//Draw the sideways or down-facing arrow beside the channel group
@@ -1362,7 +1371,7 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 							SelectObject(hdc, sidebarColorBrush);
 							SetDCPenColor(hdc, sidebarColor);
 							SetBkColor(hdc, sidebarColor);
-							Rectangle(hdc, 15, (idx * 32) + 50, 232, (idx * 32) + 50 + 32 + 32);
+							Rectangle(hdc, 0, (idx * 32) + 50, 232, (idx * 32) + 50 + 32 + 32);
 
 							if (pData->hoverIdx == idx) {
 								SetDCPenColor(hdc, RGB(52,55,60));
