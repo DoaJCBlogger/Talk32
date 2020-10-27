@@ -1504,7 +1504,7 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 					DestroyMenu(hRightClickMenu);
 				} else {
 					//We need to find out what item the user clicked
-					int actualHoverIdx = pData->hoverIdx + (pData->scrollPos >> 5);// - (pData->scrollPos == 0 ? 0 : 1); /* This used to used to be needed to fix an off-by-1 error when the user wasn't fulled scrolled to the top */
+					int actualHoverIdx = pData->hoverIdx + (pData->scrollPos >> 5) + ((pData->scrollPos & 0x1f) == 0 ? 0 : 1); /* ((pData->scrollPos & 0x1f) == 0 ? 0 : 1) is needed to fix an off-by-1 error when the user changes the window height and then collapses and tries to expand a group after scrolling to a position that is not a multiple of 32. */
 					
 					//If the user clicked a channel group, then expand or collapse it.
 					unsigned int itemIdx = -1;

@@ -27,4 +27,4 @@ This project is compiled with version 7.1 of the Windows SDK.
 #### Known issues
 - Doesn't connect to Discord yet
 - Server icons are shown in low color
-- There is an issue with expanding and collapsing channel categories when the window is resized after collapsing one.
+- (Possibly resolved) There is an issue with expanding and collapsing channel categories when the window is resized after collapsing one.
