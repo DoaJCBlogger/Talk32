@@ -1512,6 +1512,36 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 						itemIdx++;
 						if (itemIdx == actualHoverIdx) {
 							pData->dataModel.at(i).IsExpanded = !pData->dataModel.at(i).IsExpanded;
+							
+							//Re-calculate the scrollbar size
+							unsigned int totalItems = 0;
+							for (unsigned int i = 0; i < pData->dataModel.size(); i++) {
+								totalItems++;
+								if (pData->dataModel.at(i).IsExpanded) 
+									for (unsigned int j = 0; j < pData->dataModel.at(i).channels.size(); j++) totalItems++;
+							}
+							RECT r;
+							GetClientRect(wnd, &r);
+							int h = r.bottom - r.top;
+							SCROLLINFO si = {0};
+							GetScrollInfo(pData->hwndScrollbar, SB_CTL, &si);
+							si.cbSize = sizeof(SCROLLINFO);
+							si.fMask = SIF_RANGE | SIF_PAGE;
+							si.nMin = 0;
+							si.nMax = ((totalItems + 2) * 32);
+							si.nPage = h - 50;
+							
+							// Scroll to the top if the list is small enough to fully fit in the window when a channel group is collapsed
+							//This solves the issue where the list is still scrolled down, maintaining its position, while the scrollbar "thumb" is updated to take up the full scrollbar, making it impossible to scroll up.
+							if (((totalItems + 2) * 32) <= h - 50) {
+								si.nPos = 0;
+								pData->scrollPos = 0;
+							}
+							
+							//si.nTrackPos = 0;
+							SetScrollInfo(pData->hwndScrollbar, SB_CTL, &si, true);
+
+							//Stop the loop
 							break;
 						}
 						if (pData->dataModel.at(i).IsExpanded) 
