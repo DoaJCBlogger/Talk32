@@ -80,6 +80,11 @@ enum MainPageSubLocation {Channel, Friends, DM, GroupDM, Explore};
 
 Page location = LoginPage;
 MainPageSubLocation sublocation = Friends;
+unsigned long long selectedServer = -1;
+unsigned long long selectedChannel = -1;
+unsigned int selectedChannelGroupIdx = 0;
+unsigned int selectedChannelIdxWithinGroup = 0;
+wstring selectedChannelName = L"";
 
 struct ConfigObj {
 	wstring authToken;
@@ -1544,10 +1549,19 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 							//Stop the loop
 							break;
 						}
-						if (pData->dataModel.at(i).IsExpanded) 
+						if (pData->dataModel.at(i).IsExpanded) {
+							bool shouldStopSearchingForClickedItem = false;
 							for (unsigned int j = 0; j < pData->dataModel.at(i).channels.size(); j++) {
 								itemIdx++;
+								if (itemIdx == actualHoverIdx) {
+									selectedChannel = pData->dataModel.at(i).channels.at(j).id;
+									selectedChannelGroupIdx = i;
+									selectedChannelIdxWithinGroup = j;
+									selectedChannelName = pData->dataModel.at(i).channels.at(j).name;
+								}
 							}
+							if (shouldStopSearchingForClickedItem) break;
+						}
 					}
 					InvalidateRect(wnd, NULL, FALSE); //TODO: Optimize this so items that were scrolled and are still fully visible aren't redrawn.
 					//UpdateWindow(wnd);
@@ -1938,6 +1952,7 @@ LRESULT CALLBACK serverListProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lParam
 				p = to_wstring((long long)pData->serverHoverIdx);
 				
 				//The user clicked an icon if pData->serverHoverIdx != -1
+				//It's possible for pData->serverHoverIdx to contain an index past the end of the list.
 				MessageBox(NULL, p.c_str(), L"", MB_OK);
 			}
 		break;
