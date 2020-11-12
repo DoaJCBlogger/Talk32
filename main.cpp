@@ -51,6 +51,7 @@ using namespace rapidjson;
 
 LRESULT CALLBACK leftSidebarProc(HWND, UINT, WPARAM, LPARAM);
 LRESULT CALLBACK serverListProc(HWND, UINT, WPARAM, LPARAM);
+LRESULT CALLBACK contentAreaProc(HWND, UINT, WPARAM, LPARAM);
 LRESULT CALLBACK hoverBtnProc(HWND, UINT, WPARAM, LPARAM);
 LRESULT CALLBACK editProc(HWND, UINT, WPARAM, LPARAM);
 LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
@@ -107,8 +108,9 @@ bool CALLBACK SetFont(HWND child, LPARAM font);
 bool RectangleWidthHeight(HDC hdc, int x, int y, int w, int h);
 bool RoundRectWidthHeight(HDC hdc, int x, int y, int w, int h, int rw, int rh);
 void SetRectXYWidthHeight(RECT* r, long x, long y, long w, long h);
+unsigned int getMessageHeight(HDC, unsigned int, wstring);
 size_t urlWriteCallback(char*, size_t, size_t, void*);
-HWND hwndMainWin, statusBar, authTokenBox, httpResponseLabel, loginBtn, hwndServerList, hwndLeftSidebar, offlineBtn;
+HWND hwndMainWin, statusBar, authTokenBox, httpResponseLabel, loginBtn, hwndServerList, hwndLeftSidebar, hwndContentArea, offlineBtn;
 HBRUSH windowBGBrush, mainGrayColorBrush, discordBlueBtnBrush, discordBlueBtnHoverBrush, discordBlueBtnDownBrush, serverListColorBrush, sidebarColorBrush, serverListHoverColor, serverListSelectedColor;// = (HBRUSH)GetStockObject(WHITE_BRUSH);
 std::string data;
 std::string BearerToken;
@@ -158,10 +160,12 @@ COLORREF discordBlueBtnColor = RGB(114, 137, 218);
 COLORREF discordBlueBtnHoverColor = RGB(103, 123, 196);
 COLORREF discordBlueBtnDownColor = RGB(91, 110, 174);
 COLORREF channelColor = RGB(142, 146, 151);
+COLORREF messageTextColor = RGB(220, 221, 222);
 wstring localAppDataPath;
 wstring configFilePath;
 
 int scrollPosition = 0;
+unsigned int contentAreaWidth;
 
 struct HoverBtnData {
 	bool mouseIsOver;
@@ -218,6 +222,22 @@ struct LeftSidebarData {
 	unsigned long long selectedChannelID;
 	vector<ChannelGroup> dataModel;
 	LeftSidebarData():hwndScrollbar(NULL),scrollPos(0){}
+};
+
+struct Message {
+	unsigned long long id;
+	unsigned long long authorID;
+	int messageHeight;
+	wstring text;
+};
+
+struct ContentAreaData {
+	vector<Message> messages;
+	HWND hwndScrollbar;
+	bool leftBtnDown;
+	long scrollPos;
+	unsigned long long totalContentHeight;
+	ContentAreaData():hwndScrollbar(NULL),scrollPos(0){}
 };
 
 void drawAuthPage(HDC hdc, int w, int h) {
@@ -288,7 +308,7 @@ void drawMainPage(HDC hdc, int w, int h) {
 	//The right sidebar is 240 px when viewing a channel and 420 px in the Friends list
 	//The content area which takes up the remaining space
 	
-	unsigned int contentAreaWidth = w - (72 + 15 + 240 + 15);
+	contentAreaWidth = w - (72 + 15 + 240 + 15);
 	if (sublocation == Friends) {
 		contentAreaWidth -= 420;
 	} else if ((sublocation == Channel || sublocation == GroupDM) && config.showUserList) {
@@ -601,7 +621,7 @@ int WINAPI WinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLin
 	serverListClass.hCursor = LoadCursor(0, IDC_ARROW);
 	serverListClass.cbWndExtra = sizeof(ServerListData*);
 	RegisterClassW(&serverListClass);
-
+	
 	WNDCLASSW leftSidebarClass = {0};
 	leftSidebarClass.lpszClassName = L"LeftSidebar";
 	leftSidebarClass.hbrBackground = sidebarColorBrush;
@@ -610,6 +630,15 @@ int WINAPI WinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLin
 	leftSidebarClass.hCursor = LoadCursor(0, IDC_ARROW);
 	leftSidebarClass.cbWndExtra = sizeof(LeftSidebarData*);
 	RegisterClassW(&leftSidebarClass);
+
+	WNDCLASSW contentAreaClass = {0};
+	contentAreaClass.lpszClassName = L"ContentArea";
+	contentAreaClass.hbrBackground = mainGrayColorBrush;
+	contentAreaClass.style = CS_GLOBALCLASS | CS_VREDRAW;
+	contentAreaClass.lpfnWndProc = contentAreaProc;
+	contentAreaClass.hCursor = LoadCursor(0, IDC_ARROW);
+	contentAreaClass.cbWndExtra = sizeof(ContentAreaData*);
+	RegisterClassW(&contentAreaClass);
 	
 	hwndMainWin = CreateWindowW(wc.lpszClassName, L"Talk32 (Unofficial Client for Discord)", WS_OVERLAPPEDWINDOW | WS_VISIBLE, config.windowX, config.windowY, config.windowWidth, config.windowHeight, 0, 0, hInstance, 0);
 
@@ -733,7 +762,11 @@ LRESULT CALLBACK WndProc( HWND hwndMainWin, UINT msg, WPARAM wParam, LPARAM lPar
 			
 			//Resize the left sidebar
 			MoveWindow(hwndLeftSidebar, 72 + 15 + 1, 0, 240 + 15, h - 22, TRUE);
-
+			
+			//Resize the content area
+			contentAreaWidth = w - (240 + 15 + 72 + 15 + 1) - (config.showUserList ? 240 : 0);
+			MoveWindow(hwndContentArea, 240 + 15 + 72 + 15 + 1, 0, contentAreaWidth, h - 22, TRUE);
+			
 			//Resize the status bar
 			SendMessage(statusBar, WM_SIZE, 0, 0);
 			if (windowRectIsValid) {
@@ -780,6 +813,12 @@ LRESULT CALLBACK WndProc( HWND hwndMainWin, UINT msg, WPARAM wParam, LPARAM lPar
 						SendMessage(hwndLeftSidebar, WM_VSCROLL, (WPARAM)(SB_LINEUP & 0xffff), NULL);
 					} else {
 						SendMessage(hwndLeftSidebar, WM_VSCROLL, (WPARAM)(SB_LINEDOWN & 0xffff), NULL);
+					}
+				} else if (xPos > (87 + 240 + 15) && xPos <= (87 + 240 + 15 + contentAreaWidth)) {
+					if (zDelta > 0) {
+						SendMessage(hwndContentArea, WM_VSCROLL, (WPARAM)(SB_LINEUP & 0xffff), NULL);
+					} else {
+						SendMessage(hwndContentArea, WM_VSCROLL, (WPARAM)(SB_LINEDOWN & 0xffff), NULL);
 					}
 				}
 				return 0;
@@ -1008,13 +1047,16 @@ bool login(bool clearAuthPage, bool offlineMode) {
 	//Server list
 	RECT r;
 	GetClientRect(hwndMainWin, &r);
+	unsigned int width = r.right - r.left;
 	unsigned int height = r.bottom - r.top;
 	hwndServerList = CreateWindowExW(NULL, L"ServerList", L"Servers", WS_CHILD | WS_VISIBLE, 0, 0, 72 + 15, height - 22, hwndMainWin, (HMENU)1, NULL, NULL);
 
 	//Left sidebar
 	hwndLeftSidebar = CreateWindowExW(NULL, L"LeftSidebar", L"Channels", WS_CHILD | WS_VISIBLE, 72 + 15 + 1, 0, 240 + 15, height - 22, hwndMainWin, (HMENU)1, NULL, NULL);
 
-	
+	//Content area
+	contentAreaWidth = width - (240 + 15 + 72 + 15 + 1) - (config.showUserList ? 240 : 0);
+	hwndContentArea = CreateWindowExW(NULL, L"ContentArea", L"Messages", WS_CHILD | WS_VISIBLE, 240 + 15 + 72 + 15 + 1, 0, contentAreaWidth, height - 22, hwndMainWin, (HMENU)1, NULL, NULL);
 	
 	//loginBtn = CreateWindowExW(NULL, L"DiscordButton", L"Log In", WS_CHILD | WS_VISIBLE, 10, 10, 100, 40, hwndMainWin, (HMENU)1, NULL, NULL);
 
@@ -2075,6 +2117,331 @@ LRESULT CALLBACK serverListProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lParam
 			return DefWindowProcW(wnd, msg, wParam, lParam);
 	}
 	return DefWindowProcW(wnd, msg, wParam, lParam);
+}
+
+LRESULT CALLBACK contentAreaProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+	HDC hdc;
+	PAINTSTRUCT ps;
+	RECT rect;
+	HGDIOBJ originalGDIObj;
+	
+	ContentAreaData* pData = (ContentAreaData*)GetWindowLongPtr(wnd, 0);
+	
+	POINT mousePosition;
+	
+	wchar_t windowName[255];
+	
+	long long pds;
+	
+	CREATESTRUCT *cs;
+
+	switch (msg) {
+		case WM_NCCREATE:
+			pData = new ContentAreaData();
+			if (pData == NULL) return FALSE;
+			SetWindowLongPtr(wnd, 0, (LONG_PTR)pData);
+			pData->scrollPos = 0;
+			pData->totalContentHeight = 0;
+			{
+				Message m;
+				m.messageHeight = -1;
+				
+				m.authorID = 580427633351720961;
+				m.id = 776250970556334090;
+				m.text = L"D:";
+				pData->messages.push_back(m);
+				
+				m.authorID = 226733221499371521;
+				m.id = 776250656700891167;
+				m.text = L"Schmitty more like Snitchtty";
+				pData->messages.push_back(m);
+				
+				m.authorID = 226733221499371521;
+				m.id = 776250578384060457;
+				m.text = L"Why did you rat out traka";
+				pData->messages.push_back(m);
+				
+				m.authorID = 196483655453900801;
+				m.id = 776242881698070588;
+				m.text = L"do you think the authorities got traka? he really was spilling secrets, and i did put in an FBI tip...";
+				pData->messages.push_back(m);
+				
+				m.authorID = 545703069783031828;
+				m.id = 776234616586502175;
+				m.text = L"[image]";
+				pData->messages.push_back(m);
+				
+				m.authorID = 115110682399080453;
+				m.id = 776226754125234227;
+				m.text = L"Went to the future.or somrttjkng";
+				pData->messages.push_back(m);
+				
+				m.authorID = 115110682399080453;
+				m.id = 776226712107220992;
+				m.text = L"Teskaplex probably lile";
+				pData->messages.push_back(m);
+				
+				m.authorID = 580427633351720961;
+				m.id = 776224643500605441;
+				m.text = L"Sarah died in vain";
+				pData->messages.push_back(m);
+				
+				m.authorID = 580427633351720961;
+				m.id = 776224643500605441;
+				m.text = L"Trakaplex died for our sins";
+				pData->messages.push_back(m);
+			}
+			
+			return TRUE;
+		break;
+		case WM_CREATE:
+		{
+			RECT r;
+			GetClientRect(wnd, &r);
+			int height = r.bottom - r.top;
+			r.top += 50;
+			r.right -= 15;
+			pData->hwndScrollbar = CreateWindowExW(NULL, L"SCROLLBAR",L"", WS_CHILD | SBS_VERT | WS_VISIBLE, r.right, 0, 15, height, wnd, (HMENU)NULL, (HINSTANCE)GetWindowLong(wnd, GWL_HINSTANCE), NULL);
+			int w = r.right - r.left;
+			int h = height;
+			MoveWindow(pData->hwndScrollbar, r.right - 15, 0, 15, h, TRUE);
+
+			SCROLLINFO si = {0};
+			si.cbSize = sizeof(SCROLLINFO);
+			si.fMask = SIF_RANGE | SIF_PAGE | SIF_POS;
+			si.nMin = 0;
+			si.nMax = 10000;
+			si.nPage = h;
+			si.nPos = 10000;
+			si.nTrackPos = 0;
+			SetScrollInfo(pData->hwndScrollbar, SB_CTL, &si, true);
+		}
+		break;
+		/*case WM_NCDESTROY:
+			{
+				//Release the server icon bitmaps
+				for (vector<ServerListItem>::iterator it = pData->dataModel.begin(); it != pData->dataModel.end(); ++it) {
+					DeleteObject(it->hbmIcon);
+				}
+				if (pData != NULL) delete pData;
+			}
+			return 0;
+		break;*/
+		case WM_PAINT:
+			hdc = BeginPaint(wnd, &ps);
+			originalGDIObj = SelectObject(hdc, GetStockObject(DC_PEN));
+			{
+				RECT r, textRect;
+				GetClientRect(wnd, &r);
+				int width = r.right - r.left;
+				int height = r.bottom - r.top;
+				
+				//Set up the font
+				SetBkColor(hdc, mainGrayColor);
+				SelectObject(hdc, smallInfoFont);
+				//SetTextColor(hdc, RGB(255, 255, 255));
+				//wstring msg2 = utf8_to_wstring("Night guys! I always love you, someone out there in the world cares for you \r\n,and needs you. You have a dream don’t give up now, later, or anytime soon follow YOUR dreams and do what YOU want too. Not what everybody else is doing be the odd one out, because one day you are going to be the moon in the sky at night, while the others who wanted to follow everyone else are the little stars. Stay true to yourself NIGht!!");
+				//wstring msg2 = L"DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD";
+				textRect.left = 73;
+				textRect.top = 15;
+				textRect.right = 73 + (width - 146);
+				/*textRect.bottom = 50;
+				DrawText(hdc, msg2.c_str(), msg2.length(), &textRect, DT_WORDBREAK | DT_EDITCONTROL | DT_CALCRECT);
+				wstring msg = L"Left=";
+				msg += to_wstring((long long)textRect.left);
+				msg += L", Right=";
+				msg += to_wstring((long long)textRect.right);
+				msg += L", Top=";
+				msg += to_wstring((long long)textRect.top);
+				msg += L", Bottom=";
+				msg += to_wstring((long long)textRect.bottom);
+				msg += L", Width=";
+				msg += to_wstring((long long)(textRect.right - textRect.left));
+				msg += L", Height=";
+				msg += to_wstring((long long)(textRect.bottom - textRect.top));
+				MessageBox(NULL, msg.c_str(), L"", MB_OK);*/
+				//textRect.left = 73;
+				//textRect.top = 15;
+				//textRect.right = 73 + (width - 146);
+				//textRect.bottom = 100;
+				
+				unsigned int textY = height;
+				unsigned int messageWidth = width - 146;
+				unsigned int messageHeight;
+				unsigned int messageSpacing = 20;
+				unsigned long long totalContentHeight = 0;
+				for (unsigned int i = 0; i < pData->messages.size(); i++) {
+					messageHeight = getMessageHeight(hdc, messageWidth, pData->messages.at(i).text);
+					pData->messages.at(i).messageHeight = messageHeight + messageSpacing;
+					totalContentHeight += messageHeight + messageSpacing + 25;
+					textY -= messageHeight + messageSpacing;
+					
+					textRect.top = textY;
+					textRect.bottom = textY + messageHeight;
+					
+					//Draw the text
+					SetTextColor(hdc, messageTextColor);
+					DrawText(hdc, pData->messages.at(i).text.c_str(), pData->messages.at(i).text.length(), &textRect, DT_WORDBREAK | DT_EDITCONTROL);
+					
+					//Don't bother drawing anything else if the current message is at the top.
+					if (textY < 0) break;
+					
+					//Draw the username
+					textY -= 25;
+					SetTextColor(hdc, RGB(255, 255, 255)); //TODO: draw username with the right color
+					ExtTextOut(hdc, textRect.left, textY, NULL, NULL, to_wstring((long long)pData->messages.at(i).authorID).c_str(), to_wstring((long long)pData->messages.at(i).authorID).length(), NULL);
+				}
+				
+				//Update the scrollbar
+				pData->totalContentHeight = totalContentHeight;
+				SCROLLINFO si = {0};
+				GetScrollInfo(pData->hwndScrollbar, SB_CTL, &si);
+				si.cbSize = sizeof(SCROLLINFO);
+				si.fMask = SIF_RANGE | SIF_PAGE;// | SIF_POS;
+				//si.nMin = 0;
+				si.nMax = totalContentHeight;
+				si.nPage = height;
+				//si.nPos = 10000;
+				//si.nTrackPos = 0;
+				SetScrollInfo(pData->hwndScrollbar, SB_CTL, &si, true);
+			}
+			SelectObject(hdc, originalGDIObj);
+			EndPaint(wnd, &ps);
+			return 0;
+		break;
+		case WM_MOUSEMOVE:
+			{
+				
+			}
+		break;
+		case WM_MOUSELEAVE:
+			{
+				
+			}
+			return 0;
+		break;
+		case WM_LBUTTONDOWN:
+			pData->leftBtnDown = true;
+			//InvalidateRect(wnd, NULL, TRUE);
+		break;
+		case WM_LBUTTONUP:
+			{
+				
+			}
+		break;
+		case WM_RBUTTONUP:
+			{
+				
+			}
+		break;
+		case WM_SIZE:
+			//MessageBox(NULL, L"wm_size called on content area", L"", MB_OK);
+			{
+				RECT r;
+				GetClientRect(wnd, &r);
+				int w = r.right - r.left;
+				int h = r.bottom - r.top;
+				MoveWindow(pData->hwndScrollbar, r.right - 15, 0, 15, h, TRUE);
+
+				SCROLLINFO si = {0};
+				GetScrollInfo(pData->hwndScrollbar, SB_CTL, &si);
+				si.cbSize = sizeof(SCROLLINFO);
+				si.fMask = SIF_RANGE | SIF_PAGE;
+				si.nMin = 0;
+				si.nMax = pData->totalContentHeight;
+				si.nPage = h;
+				//si.nPos = 10000;
+				si.nTrackPos = 0;
+				SetScrollInfo(pData->hwndScrollbar, SB_CTL, &si, true);
+			}
+		break;
+		case WM_VSCROLL:
+			//Copied from "Rita Han - MSFT" on StackOverflow
+			//https://stackoverflow.com/a/62038422
+			{
+				// Get all the vertical scroll bar information.
+				SCROLLINFO si = {0};
+				si.cbSize = sizeof(si);
+				si.fMask = SIF_ALL;
+				GetScrollInfo(pData->hwndScrollbar, SB_CTL, &si);
+
+				// Save the position for comparison later on.
+				int yPos = si.nPos;
+				switch (LOWORD(wParam))
+				{
+					// User clicked the top arrow.
+				case SB_LINEUP:
+					si.nPos -= 75;//1;
+					break;
+
+					// User clicked the bottom arrow.
+				case SB_LINEDOWN:
+					si.nPos += 75;//1;
+					break;
+
+					// User clicked the scroll bar shaft above the scroll box.
+				case SB_PAGEUP:
+					si.nPos -= si.nPage;
+					break;
+
+					// User clicked the scroll bar shaft below the scroll box.
+				case SB_PAGEDOWN:
+					si.nPos += si.nPage;
+					break;
+
+					// User dragged the scroll box.
+				case SB_THUMBTRACK:
+					si.nPos = si.nTrackPos;
+					break;
+
+				default:
+					break;
+				}
+
+				// Set the position and then retrieve it.  Due to adjustments
+				// by Windows it may not be the same as the value set.
+				si.fMask = SIF_POS;
+				SetScrollInfo(pData->hwndScrollbar, SB_CTL, &si, TRUE);
+				GetScrollInfo(pData->hwndScrollbar, SB_CTL, &si);
+
+				// If the position has changed, scroll window and update it.
+				if (si.nPos != yPos)
+				{
+					RECT r;
+					GetClientRect(wnd, &r);
+					r.right -= 15;
+					ScrollWindow(wnd, 0, 75 * (yPos - si.nPos), &r, &r);
+					InvalidateRect(wnd, &r, FALSE); //TODO: Optimize this so items that were scrolled and are still visible aren't redrawn.
+					//UpdateWindow(wnd);
+					pData->scrollPos = si.nPos;
+				}
+				return 0;
+			}
+		break;
+		case WM_COMMAND:
+			{
+				switch(LOWORD(wParam)) {
+
+				}
+			}
+		break;
+		default:
+			return DefWindowProcW(wnd, msg, wParam, lParam);
+	}
+	return DefWindowProcW(wnd, msg, wParam, lParam);
+}
+
+unsigned int getMessageHeight(HDC hdc, unsigned int width, wstring message) {
+	RECT textRect;
+	textRect.left = 0;
+	textRect.top = 0;
+	textRect.right = width;
+	DrawText(hdc, message.c_str(), message.length(), &textRect, DT_WORDBREAK | DT_EDITCONTROL | DT_CALCRECT);
+	
+	unsigned int height = textRect.bottom - textRect.top;
+	if (height < 40) height = 40;
+	return height;
 }
 
 LRESULT CALLBACK hoverBtnProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lParam)
