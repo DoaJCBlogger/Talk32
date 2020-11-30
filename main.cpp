@@ -57,6 +57,7 @@ LRESULT CALLBACK editProc(HWND, UINT, WPARAM, LPARAM);
 LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
 void AddMenus(HWND);
 bool login(bool, bool offlineMode = false);
+wstring getUserAgent();
 
 //Contains a font fix provided by "Christopher Janzon" on stackoverflow.com
 //https://stackoverflow.com/a/17075471
@@ -74,6 +75,8 @@ bool login(bool, bool offlineMode = false);
 
 #define MINIMUM_WINDOW_WIDTH 985
 #define MINIMUM_WINDOW_HEIGHT 480
+
+const wstring versionString = L"Talk32 v0.1";
 
 enum Page {LoginPage, MainPage};
 
@@ -1943,10 +1946,10 @@ LRESULT CALLBACK serverListProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lParam
 				unsigned int topIconIdx = pData->scrollPos / 56; //The index of the icon at the top of the server list
 				unsigned int relativeHoverIdx = yPos / 56;
 				unsigned int absoluteHoverIdx = topIconIdx + relativeHoverIdx;
-				int hoverIdx = (xPos < 12 || xPos > 59 || yPos % 56 < 8) ? -1 : absoluteHoverIdx;
+				int hoverIdx = (xPos < 12 || xPos > 59 || yPos % 56 < 8 || absoluteHoverIdx > pData->dataModel.size() + 1) ? -1 : absoluteHoverIdx;
 				pData->serverHoverIdx = hoverIdx;
 
-				if (hoverIdx == -1) {
+				if (hoverIdx == -1 || hoverIdx > pData->dataModel.size() + 1) {
 					SetCursor(LoadCursor(0, IDC_ARROW));
 				} else {
 					//TODO: Don't use the hand icon for empty server icon spaces
@@ -1989,13 +1992,17 @@ LRESULT CALLBACK serverListProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lParam
 				unsigned int topIconIdx = pData->scrollPos / 56; //The index of the icon at the top of the server list
 				unsigned int relativeClickedIdx = yPos / 56;
 				unsigned int absoluteClickedIdx = topIconIdx + relativeClickedIdx;
-
-				wstring p = L"";
-				p = to_wstring((long long)pData->serverHoverIdx);
 				
-				//The user clicked an icon if pData->serverHoverIdx != -1
 				//It's possible for pData->serverHoverIdx to contain an index past the end of the list.
-				MessageBox(NULL, p.c_str(), L"", MB_OK);
+
+				if (pData->serverHoverIdx == 0) {
+					MessageBox(NULL, L"Home", L"", MB_OK);
+				} else if (pData->serverHoverIdx == pData->dataModel.size() + 1) {
+					MessageBox(NULL, L"Explore Public Servers", L"", MB_OK);
+				} else if (pData->serverHoverIdx <= pData->dataModel.size()) {
+					MessageBox(NULL, pData->dataModel.at(pData->serverHoverIdx - 1).name.c_str(), L"", MB_OK);
+				}
+				//p = to_wstring((long long)pData->serverHoverIdx);
 			}
 		break;
 		case WM_RBUTTONUP:
@@ -2625,4 +2632,43 @@ bool CALLBACK SetFont(HWND child, LPARAM font){
 		SendMessage(child, WM_SETFONT, font, true);
 	}
 	return true;
+}
+
+wstring getUserAgent() {
+	//Build the user-agent string
+	//We want to do it here instead of during startup because doesn't support Windows 2000.
+	DWORD windowsVersion = GetVersion();
+	DWORD majorVersion, minorVersion;
+	majorVersion = (DWORD)(LOBYTE(LOWORD(windowsVersion)));
+	minorVersion = (DWORD)(HIBYTE(LOWORD(windowsVersion)));
+	
+	wstring userAgent = versionString + L" (Windows NT ";
+	userAgent += to_wstring((long long)majorVersion) + L"." + to_wstring((long long)minorVersion);
+	
+	SYSTEM_INFO systemInfo;
+	GetNativeSystemInfo(&systemInfo);
+	
+	switch (systemInfo.wProcessorArchitecture) {
+		case 0:
+			userAgent += L" x86)";
+			break;
+		case 9:
+			userAgent += L" x64)";
+			break;
+		case 5:
+			userAgent += L" ARM)";
+			break;
+		case 12:
+			userAgent += L" ARM64)";
+			break;
+		case 6:
+			userAgent += L" Itanium)";
+			break;
+		case 0xffff:
+		default:
+			userAgent += L", unknown architecture)";
+			break;
+	}
+	
+	return userAgent;
 }
