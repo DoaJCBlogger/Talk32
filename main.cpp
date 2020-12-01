@@ -68,6 +68,21 @@ wstring getUserAgent();
 #define IDM_HELP_USERGUIDE 4
 #define IDM_REFRESH 5
 #define IDM_SETTINGS 6
+#define IDM_COPY_CHANNEL_ID 7
+#define IDM_INVITE_TO_CHANNEL 8
+#define IDM_NOTIFICATIONS_DEFAULT 9
+#define IDM_NOTIFICATIONS_NONE 10
+#define IDM_NOTIFICATIONS_ONLY_MENTIONS 11
+#define IDM_NOTIFICATIONS_ALL 12
+#define IDM_MUTE 13
+#define IDM_MUTE_24_HOUR 14
+#define IDM_MUTE_8_HOUR 15
+#define IDM_MUTE_1_HOUR 16
+#define IDM_MUTE_15_MINUTE 17
+#define IDM_CHANNEL_MARK_AS_READ 18
+#define IDM_VOICE_CHANNEL_HIDE_NAMES 19
+#define IDM_VOICE_CHANNEL_INVITE 20
+#define IDM_VOICE_CHANNEL_COPY_ID 21
 
 #define IDC_AUTHTOKENFIELD 7
 
@@ -88,6 +103,7 @@ unsigned long long selectedServer = -1;
 unsigned long long selectedChannel = -1;
 unsigned int selectedChannelGroupIdx = 0;
 unsigned int selectedChannelIdxWithinGroup = 0;
+wstring selectedServerName = L"";
 wstring selectedChannelName = L"";
 
 struct ConfigObj {
@@ -129,6 +145,7 @@ HBITMAP hBmpChannelPoundSignSelected;
 HBITMAP hBmpChannelPoundSignLockedSelected;
 HBITMAP hBmpVoiceChannelIcon;
 HBITMAP hBmpVoiceChannelLockedIcon;
+HBITMAP hBmpLargePoundSign;
 
 RECT YouTubeLogoTopBarRect;
 RECT locationBarRect;
@@ -158,11 +175,12 @@ HFONT hoverBtnFont;
 
 COLORREF serverListColor = RGB(32, 34, 37);
 COLORREF sidebarColor = RGB(47, 49, 54);
-COLORREF mainGrayColor = RGB(54, 57, 63);
+COLORREF mainGrayColor = RGB(54, 57, 63); //56, 57, 59
 COLORREF discordBlueBtnColor = RGB(114, 137, 218);
 COLORREF discordBlueBtnHoverColor = RGB(103, 123, 196);
 COLORREF discordBlueBtnDownColor = RGB(91, 110, 174);
 COLORREF channelColor = RGB(142, 146, 151);
+COLORREF contentAreaHeaderBGColor = RGB(56, 57, 59);
 COLORREF messageTextColor = RGB(220, 221, 222);
 wstring localAppDataPath;
 wstring configFilePath;
@@ -198,6 +216,7 @@ struct ChannelItem {
 	bool voiceChannel;
 	bool locked;
 	bool unread;
+	bool hideVoiceChannelMembers;
 };
 
 struct ChannelGroup {
@@ -719,6 +738,7 @@ LRESULT CALLBACK WndProc( HWND hwndMainWin, UINT msg, WPARAM wParam, LPARAM lPar
 			hBmpChannelPoundSignLockedSelected = (HBITMAP) LoadImageW(NULL, L"img\\channel_pound_sign_locked_selected.bmp", IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE);
 			hBmpVoiceChannelIcon = (HBITMAP) LoadImageW(NULL, L"img\\voice.bmp", IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE);
 			hBmpVoiceChannelLockedIcon = (HBITMAP) LoadImageW(NULL, L"img\\voice_locked.bmp", IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE);
+			hBmpLargePoundSign = (HBITMAP) LoadImageW(NULL, L"img\\large_pound_sign.bmp", IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE);
 
 			
 			//Load fonts
@@ -895,6 +915,7 @@ LRESULT CALLBACK WndProc( HWND hwndMainWin, UINT msg, WPARAM wParam, LPARAM lPar
 			DeleteObject(hBmpChannelPoundSignLockedSelected);
 			DeleteObject(hBmpVoiceChannelIcon);
 			DeleteObject(hBmpVoiceChannelLockedIcon);
+			DeleteObject(hBmpLargePoundSign);
 		
 			//Delete fonts
 			DeleteObject(hoverBtnFont);
@@ -1012,6 +1033,7 @@ bool login(bool clearAuthPage, bool offlineMode) {
 			sli.unread = false;
 			Gdiplus::Color serverListBG;
 			serverListBG.SetFromCOLORREF(serverListColor);
+			wstring iconFilename; //For some reason the channel icons don't show up unless we create this variable outside of the loop.
 			for (int i = 0; i < arraySize; i++) {
 				//shouldAddEntry = true;
 				server = serverArray[i];//.GetUint64();
@@ -1026,7 +1048,7 @@ bool login(bool clearAuthPage, bool offlineMode) {
 
 				//Get the icon
 				if (server.HasMember("icon") && server["icon"].IsString()) {
-					wstring iconFilename = cacheDir + L"\\" + to_wstring(sli.id) + L"\\" + utf8_to_wstring(server["icon"].GetString());
+					iconFilename = cacheDir + L"\\" + to_wstring(sli.id) + L"\\" + utf8_to_wstring(server["icon"].GetString());
 					Gdiplus::Bitmap bmp(iconFilename.c_str(), false);
 					bmp.GetHBITMAP(serverListBG, &sli.hbmIcon);
 				} else {
@@ -1098,11 +1120,13 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 				c.unread = false;
 				c.locked = true;
 				c.voiceChannel = true;
+				c.hideVoiceChannelMembers = true;
 				cg.IsExpanded = true;
 				cg.channels.push_back(c);
 
 				c.name = L"soldiers only";
 				c.unread = false;
+				c.hideVoiceChannelMembers = false;
 				cg.channels.push_back(c);
 				
 				c.name = L"colony only";
@@ -1304,7 +1328,12 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 
 					//Draw the server name
 					SetTextColor(hdc, RGB(255, 255, 255));
-					ExtTextOut(hdc, 18, 19, NULL, NULL, pData->serverName.c_str(), pData->serverName/*str*/.length(), NULL);
+					RECT textRect;
+					textRect.left = 18;
+					textRect.top = 19;
+					textRect.right = 18 + 182;
+					//ExtTextOut(hdc, 18, 19, NULL, NULL, selectedServerName.c_str(), selectedServerName/*str*/.length(), NULL);
+					DrawText(hdc, selectedServerName.c_str(), selectedServerName.length(), &textRect, DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
 					
 					//Draw the line under the server name
 					SetDCPenColor(hdc, RGB(37,37,39));
@@ -1363,7 +1392,6 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 							
 							//Clear any background that may have been drawn before
 							//serverListHoverColor, serverListSelectedColor
-							SetDCPenColor(hdc, sidebarColor);
 							SelectObject(hdc, sidebarColorBrush);
 							SetDCPenColor(hdc, sidebarColor);
 							SetBkColor(hdc, sidebarColor);
@@ -1594,15 +1622,132 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 							//Stop the loop
 							break;
 						}
+						//If the user clicked a channel then open it.
 						if (pData->dataModel.at(i).IsExpanded) {
 							bool shouldStopSearchingForClickedItem = false;
 							for (unsigned int j = 0; j < pData->dataModel.at(i).channels.size(); j++) {
 								itemIdx++;
 								if (itemIdx == actualHoverIdx) {
-									selectedChannel = pData->dataModel.at(i).channels.at(j).id;
-									selectedChannelGroupIdx = i;
-									selectedChannelIdxWithinGroup = j;
-									selectedChannelName = pData->dataModel.at(i).channels.at(j).name;
+									if (!pData->dataModel.at(i).channels.at(j).voiceChannel) {
+										//The user clicked a text channel
+										selectedChannel = pData->dataModel.at(i).channels.at(j).id;
+										selectedChannelGroupIdx = i;
+										selectedChannelIdxWithinGroup = j;
+										selectedChannelName = pData->dataModel.at(i).channels.at(j).name;
+
+										//Update the content area
+										InvalidateRect(hwndContentArea, NULL, TRUE);
+									} else {
+										//The user clicked a voice channel
+									}
+									
+								}
+							}
+							if (shouldStopSearchingForClickedItem) break;
+						}
+					}
+					InvalidateRect(wnd, NULL, FALSE); //TODO: Optimize this so items that were scrolled and are still fully visible aren't redrawn.
+					//UpdateWindow(wnd);
+					//TODO: resize scrollbar when a group is expanded or collapsed.
+					//RedrawWindow(wnd, NULL, NULL, RDW_UPDATENOW);
+				}
+			}
+		break;
+		case WM_RBUTTONUP:
+			//pData->leftBtnDown = false;
+			//InvalidateRect(wnd, NULL, TRUE);
+			{
+				//pData->leftBtnDown = false;
+				int xPos = GET_X_LPARAM(lParam);
+				int yPos = GET_Y_LPARAM(lParam);
+				POINT mousePosition;
+				mousePosition.x = xPos;
+				mousePosition.y = yPos;
+
+				wstring p = L"";
+				if (yPos < 50) {
+					//The user right-clicked in the server name area
+					HMENU hRightClickMenu = CreatePopupMenu();
+					ClientToScreen(wnd, &mousePosition);
+					AppendMenuW(hRightClickMenu, MF_STRING, IDM_REFRESH, L"Server Boost");
+					AppendMenuW(hRightClickMenu, MF_STRING, IDM_REFRESH, L"Mark As Read");
+					AppendMenuW(hRightClickMenu, MF_STRING, IDM_REFRESH, L"Invite People");
+					AppendMenuW(hRightClickMenu, MF_STRING, IDM_REFRESH, L"Server Settings");
+					AppendMenuW(hRightClickMenu, MF_STRING, IDM_REFRESH, L"Notification Settings");
+					AppendMenuW(hRightClickMenu, MF_STRING, IDM_REFRESH, L"Privacy Settings");
+					AppendMenuW(hRightClickMenu, MF_STRING, IDM_REFRESH, L"Change Nickname");
+					AppendMenuW(hRightClickMenu, MF_STRING, IDM_REFRESH, L"Leave Server");
+					AppendMenuW(hRightClickMenu, MF_STRING, IDM_REFRESH, L"Copy ID");
+					TrackPopupMenu(hRightClickMenu, TPM_RIGHTBUTTON, mousePosition.x, mousePosition.y, 0, wnd, NULL);
+					DestroyMenu(hRightClickMenu);
+				} else {
+					//We need to find out what item the user right-clicked
+					int actualHoverIdx = pData->hoverIdx + (pData->scrollPos >> 5) + ((pData->scrollPos & 0x1f) == 0 ? 0 : 1); /* ((pData->scrollPos & 0x1f) == 0 ? 0 : 1) is needed to fix an off-by-1 error when the user changes the window height and then collapses and tries to expand a group after scrolling to a position that is not a multiple of 32. */
+					
+					//If the user right-clicked a channel group, then show a context menu.
+					unsigned int itemIdx = -1;
+					for (unsigned int i = 0; i < pData->dataModel.size(); i++) {
+						itemIdx++;
+						if (itemIdx == actualHoverIdx) {
+							//The user right-clicked a channel group
+
+							//Stop the loop
+							break;
+						}
+						//If the user right-clicked a channel then show a content menu
+						if (pData->dataModel.at(i).IsExpanded) {
+							bool shouldStopSearchingForClickedItem = false;
+							for (unsigned int j = 0; j < pData->dataModel.at(i).channels.size(); j++) {
+								itemIdx++;
+								if (itemIdx == actualHoverIdx) {
+									ClientToScreen(wnd, &mousePosition);
+									if (!pData->dataModel.at(i).channels.at(j).voiceChannel) {
+										//The user right-clicked a text channel
+										/*selectedChannel = pData->dataModel.at(i).channels.at(j).id;
+										selectedChannelGroupIdx = i;
+										selectedChannelIdxWithinGroup = j;
+										selectedChannelName = pData->dataModel.at(i).channels.at(j).name;*/
+										
+										//ClientToScreen(wnd, &mousePosition);
+										HMENU hMenu = CreatePopupMenu();
+										HMENU hMenuMuteChannel = CreatePopupMenu();
+										HMENU hMenuNotificationSettings = CreatePopupMenu();
+										AppendMenuW(hMenu, MF_STRING, IDM_CHANNEL_MARK_AS_READ, L"Mark As Read");
+										
+										AppendMenuW(hMenuMuteChannel, MF_STRING, IDM_MUTE_15_MINUTE, L"For 15 Minutes");
+										AppendMenuW(hMenuMuteChannel, MF_STRING, IDM_MUTE_1_HOUR, L"For 1 Hour");
+										AppendMenuW(hMenuMuteChannel, MF_STRING, IDM_MUTE_8_HOUR, L"For 8 Hours");
+										AppendMenuW(hMenuMuteChannel, MF_STRING, IDM_MUTE_24_HOUR, L"For 24 Hours");
+										AppendMenuW(hMenuMuteChannel, MF_STRING, IDM_MUTE, L"Until I turn it back on");
+										AppendMenuW(hMenu, MF_STRING | MF_POPUP, (UINT_PTR)hMenuMuteChannel, L"Mute Channel");
+										
+										AppendMenuW(hMenuNotificationSettings, MF_STRING, IDM_NOTIFICATIONS_DEFAULT, L"Use Server Default");
+										AppendMenuW(hMenuNotificationSettings, MF_STRING, IDM_NOTIFICATIONS_ALL, L"All Messages");
+										AppendMenuW(hMenuNotificationSettings, MF_STRING, IDM_NOTIFICATIONS_ONLY_MENTIONS, L"Only @mentions");
+										AppendMenuW(hMenuNotificationSettings, MF_STRING, IDM_NOTIFICATIONS_NONE, L"Nothing");
+										CheckMenuRadioItem(hMenuNotificationSettings, IDM_NOTIFICATIONS_DEFAULT, IDM_NOTIFICATIONS_NONE, IDM_NOTIFICATIONS_DEFAULT, MF_BYCOMMAND);
+										AppendMenuW(hMenu, MF_STRING | MF_POPUP, (UINT_PTR)hMenuNotificationSettings, L"Notification Settings");
+										
+										AppendMenuW(hMenu, MF_STRING, IDM_INVITE_TO_CHANNEL, L"Invite People");
+										AppendMenuW(hMenu, MF_STRING, IDM_COPY_CHANNEL_ID, L"Copy ID");
+										TrackPopupMenu(hMenu, TPM_RIGHTBUTTON, mousePosition.x, mousePosition.y, 0, wnd, NULL);
+										
+										DestroyMenu(hMenuNotificationSettings);
+										DestroyMenu(hMenuMuteChannel);
+										DestroyMenu(hMenu);
+									} else {
+										//The user right-clicked a voice channel
+										HMENU hMenu = CreatePopupMenu();
+										
+										AppendMenuW(hMenu, MF_STRING, IDM_VOICE_CHANNEL_HIDE_NAMES, L"Hide Names");
+										AppendMenuW(hMenu, MF_STRING, IDM_VOICE_CHANNEL_INVITE, L"Invite People");
+										AppendMenuW(hMenu, MF_STRING, IDM_VOICE_CHANNEL_COPY_ID, L"Copy ID");
+										CheckMenuItem(hMenu, IDM_VOICE_CHANNEL_HIDE_NAMES, pData->dataModel.at(i).channels.at(j).hideVoiceChannelMembers ? MF_CHECKED : MF_UNCHECKED);
+										TrackPopupMenu(hMenu, TPM_RIGHTBUTTON, mousePosition.x, mousePosition.y, 0, wnd, NULL);
+										
+										DestroyMenu(hMenu);
+									}
+									
 								}
 							}
 							if (shouldStopSearchingForClickedItem) break;
@@ -1705,6 +1850,14 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 					pData->scrollPos = si.nPos;
 				}
 				return 0;
+			}
+		case WM_COMMAND:
+			switch(LOWORD(wParam)) {
+				case IDM_VOICE_CHANNEL_HIDE_NAMES:
+				{
+					
+				}
+				break;
 			}
 		default:
 			return DefWindowProcW(wnd, msg, wParam, lParam);
@@ -1858,7 +2011,8 @@ LRESULT CALLBACK serverListProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lParam
 				unsigned int itemCount = pData->dataModel.size();
 				RECT tmp;
 				int itemsToDraw = (h / 56) + 1;
-				int startIdx = pData->scrollPos / 56;
+				int startIdx = (pData->scrollPos / 56) - 1;
+				if (startIdx == -1) startIdx = 0;
 				bool drawExploreIcon = false;
 				if ((startIdx + itemsToDraw) >= pData->dataModel.size() - 1) {
 					itemsToDraw = (pData->dataModel.size() - startIdx);
@@ -1876,28 +2030,29 @@ LRESULT CALLBACK serverListProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lParam
 					//Erase the icon area
 					SelectObject(hdc, serverListColorBrush);
 					SetDCPenColor(hdc, serverListColor);
-					Rectangle(hdc, 0, ((i + (startIdx == 0 ? 1 : 0)) * 56) + 8, 12 + 48, ((i + (startIdx == 0 ? 1 : 0)) * 56) + 8 + 48);
+					Rectangle(hdc, 0, ((i + (pData->scrollPos < 56 ? 1 : 0)) * 56) + 8, 12 + 48, ((i + (pData->scrollPos < 56 ? 1 : 0)) * 56) + 8 + 48);
 
 					//Draw the half circle if the server is marked unread
 					if (pData->dataModel.at(j).unread) {
 						SelectObject(hdc, GetStockBrush(WHITE_BRUSH));
 						SetDCPenColor(hdc, RGB(255, 255, 255));
-						Ellipse(hdc, -4, ((i + (startIdx == 0 ? 1 : 0)) * 56) + 8 + 20, 4, ((i + (startIdx == 0 ? 1 : 0)) * 56) + 8 + 20 + 8);
+						Ellipse(hdc, -4, ((i + (pData->scrollPos < 56 ? 1 : 0)) * 56) + 8 + 20, 4, ((i + (pData->scrollPos < 56 ? 1 : 0)) * 56) + 8 + 20 + 8);
 					}
 
 					//Use the rounded rectangle mask and draw the rounded white thing on the left if the mouse is over this icon
-					//The ternary operator is needed for an off-by-one issue when the scrollbar isn't at the top
-					if (pData->serverHoverIdx != -1 && j == pData->serverHoverIdx + (pData->scrollPos == 0 ? -1 : 0)) {
+					//The ternary operator was used for an off-by-one issue when the scrollbar isn't at the top
+					//It might be better to just subtract 1 no matter what
+					if (pData->serverHoverIdx != -1 && j == pData->serverHoverIdx - 1/* + (pData->scrollPos == 0 ? -1 : 0)*/) {
 						BitBlt(maskedIconDC, 0, 0, 48, 48, roundRectMaskDC, 0, 0, SRCAND);
 
 						SelectObject(hdc, GetStockBrush(WHITE_BRUSH));
 						SetDCPenColor(hdc, RGB(255, 255, 255));
-						RoundRect(hdc, -4, ((i + (startIdx == 0 ? 1 : 0)) * 56) + 8 + 14, 4, ((i + (startIdx == 0 ? 1 : 0)) * 56) + 8 + 14 + 20, 6, 6);
+						RoundRect(hdc, -4, ((i + (pData->scrollPos < 56 ? 1 : 0)) * 56) + 8 + 14, 4, ((i + (pData->scrollPos < 56 ? 1 : 0)) * 56) + 8 + 14 + 20, 6, 6);
 					}
 					else if (config.roundServerIcons) {
 						BitBlt(maskedIconDC, 0, 0, 48, 48, maskDC, 0, 0, SRCAND);
 					}
-					BitBlt(hdc, 12, ((i + (startIdx == 0 ? 1 : 0)) * 56) + 8, 48, 48, /*config.roundServerIcons ? */maskedIconDC/* : iconHDC*/, 0, 0, SRCPAINT); //The ternary expression for y is the spacing for the Home icon
+					BitBlt(hdc, 12, ((i + (pData->scrollPos < 56 ? 1 : 0)) * 56) + 8, 48, 48, /*config.roundServerIcons ? */maskedIconDC/* : iconHDC*/, 0, 0, SRCPAINT); //The ternary expression for y is the spacing for the Home icon
 
 					i++;
 				}
@@ -1909,7 +2064,7 @@ LRESULT CALLBACK serverListProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lParam
 					//Erase the icon area
 					SelectObject(hdc, serverListColorBrush);
 					SetDCPenColor(hdc, serverListColor);
-					Rectangle(hdc, 0, ((i+1) * 56) + 8, 12 + 48, ((i+1) * 56) + 8 + 48);
+					Rectangle(hdc, 0, ((i+(pData->scrollPos >= 56 ? 0 : 1)) * 56) + 8, 12 + 48, ((i+(pData->scrollPos >= 56 ? 0 : 1)) * 56) + 8 + 48);
 
 					BitBlt(maskedIconDC, 0, 0, bmp.bmWidth, bmp.bmHeight, iconHDC, 0, 0, SRCCOPY);
 					if (pData->serverHoverIdx == pData->dataModel.size() + 1) {
@@ -1917,12 +2072,12 @@ LRESULT CALLBACK serverListProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lParam
 
 						SelectObject(hdc, GetStockBrush(WHITE_BRUSH));
 						SetDCPenColor(hdc, RGB(255, 255, 255));
-						RoundRect(hdc, -4, ((i+1) * 56) + 8 + 14, 4, ((i+1) * 56) + 8 + 14 + 20, 6, 6);
+						RoundRect(hdc, -4, ((i+(pData->scrollPos >= 56 ? 0 : 1)) * 56) + 8 + 14, 4, ((i+(pData->scrollPos >= 56 ? 0 : 1)) * 56) + 8 + 14 + 20, 6, 6);
 					} else if (config.roundServerIcons) {
 						BitBlt(maskedIconDC, 0, 0, bmp.bmWidth, bmp.bmHeight, maskDC, 0, 0, SRCAND);
 					}
 
-					BitBlt(hdc, 12, ((i+1) * 56) + 8, bmp.bmWidth, bmp.bmHeight, config.roundServerIcons ? maskedIconDC : iconHDC, 0, 0, SRCPAINT);
+					BitBlt(hdc, 12, ((i+(pData->scrollPos >= 56 ? 0 : 1)) * 56) + 8, bmp.bmWidth, bmp.bmHeight, config.roundServerIcons ? maskedIconDC : iconHDC, 0, 0, SRCPAINT);
 				}
 
 				DeleteObject(maskedIconBmp);
@@ -1943,8 +2098,14 @@ LRESULT CALLBACK serverListProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lParam
 				int yPos = GET_Y_LPARAM(lParam);
 				int oldHoverIdx = pData->serverHoverIdx;
 
-				unsigned int topIconIdx = pData->scrollPos / 56; //The index of the icon at the top of the server list
-				unsigned int relativeHoverIdx = yPos / 56;
+				unsigned int topIconIdx = (pData->scrollPos / 56);// + (yPos % 56 != 0 ? 0 : 1); //The index of the icon at the top of the server list
+				unsigned int relativeHoverIdx = (yPos / 56);
+				//TODO: (possibly fixed) fix the bug in which moving the scrollbar thumb causes the hover index to be 1 less than the actual index
+				if (pData->scrollPos < 56 && pData->scrollPos % 56 != 0) {
+					//relativeHoverIdx--;
+				} else if (pData->scrollPos % 56 != 0) {
+					//relativeHoverIdx++;
+				}
 				unsigned int absoluteHoverIdx = topIconIdx + relativeHoverIdx;
 				int hoverIdx = (xPos < 12 || xPos > 59 || yPos % 56 < 8 || absoluteHoverIdx > pData->dataModel.size() + 1) ? -1 : absoluteHoverIdx;
 				pData->serverHoverIdx = hoverIdx;
@@ -1989,8 +2150,8 @@ LRESULT CALLBACK serverListProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lParam
 				//No part of server icons occurs in x values from 0-11 and 60-71
 				//if (xPos < 12 || xPos > 59) return 0;
 
-				unsigned int topIconIdx = pData->scrollPos / 56; //The index of the icon at the top of the server list
-				unsigned int relativeClickedIdx = yPos / 56;
+				unsigned int topIconIdx = (pData->scrollPos / 56); //The index of the icon at the top of the server list
+				unsigned int relativeClickedIdx = (yPos / 56) + (yPos > 0 ? 1 : 0);
 				unsigned int absoluteClickedIdx = topIconIdx + relativeClickedIdx;
 				
 				//It's possible for pData->serverHoverIdx to contain an index past the end of the list.
@@ -2000,7 +2161,13 @@ LRESULT CALLBACK serverListProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lParam
 				} else if (pData->serverHoverIdx == pData->dataModel.size() + 1) {
 					MessageBox(NULL, L"Explore Public Servers", L"", MB_OK);
 				} else if (pData->serverHoverIdx <= pData->dataModel.size()) {
-					MessageBox(NULL, pData->dataModel.at(pData->serverHoverIdx - 1).name.c_str(), L"", MB_OK);
+					//MessageBox(NULL, pData->dataModel.at(pData->serverHoverIdx - 1).name.c_str(), L"", MB_OK);
+					selectedServer = pData->dataModel.at(pData->serverHoverIdx - 1).id;
+					selectedServerName = pData->dataModel.at(pData->serverHoverIdx - 1).name;
+					
+					//Redraw the left sidebar
+					InvalidateRect(hwndLeftSidebar, NULL, TRUE);
+					UpdateWindow(hwndLeftSidebar);
 				}
 				//p = to_wstring((long long)pData->serverHoverIdx);
 			}
@@ -2035,13 +2202,15 @@ LRESULT CALLBACK serverListProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lParam
 				int w = r.right - r.left;
 				int h = r.bottom - r.top;
 				MoveWindow(pData->hwndScrollbar, r.right - 15, 0, 15, h, TRUE);
+				
+				if (h >= (pData->dataModel.size() + 2) * 56) pData->scrollPos = 0;
 
 				SCROLLINFO si = {0};
 				GetScrollInfo(pData->hwndScrollbar, SB_CTL, &si);
 				si.cbSize = sizeof(SCROLLINFO);
 				si.fMask = SIF_RANGE | SIF_PAGE;
 				si.nMin = 0;
-				si.nMax = (pData->dataModel.size() + 2/*1*/) * 56;
+				si.nMax = (pData->dataModel.size() + 3/*1*/) * 56;
 				si.nPage = h;
 				si.nPos = 0;
 				si.nTrackPos = 0;
@@ -2084,7 +2253,7 @@ LRESULT CALLBACK serverListProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lParam
 
 					// User dragged the scroll box.
 				case SB_THUMBTRACK:
-					si.nPos = si.nTrackPos;
+					si.nPos = (si.nTrackPos / 56) * 56;
 					break;
 
 				default:
@@ -2243,7 +2412,11 @@ LRESULT CALLBACK contentAreaProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 				GetClientRect(wnd, &r);
 				int width = r.right - r.left;
 				int height = r.bottom - r.top;
-				
+				HDC iconHDC;
+				BITMAP bmp;
+				HBITMAP userIcon;
+				iconHDC = CreateCompatibleDC(hdc);
+
 				//Set up the font
 				SetBkColor(hdc, mainGrayColor);
 				SelectObject(hdc, smallInfoFont);
@@ -2292,13 +2465,46 @@ LRESULT CALLBACK contentAreaProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 					DrawText(hdc, pData->messages.at(i).text.c_str(), pData->messages.at(i).text.length(), &textRect, DT_WORDBREAK | DT_EDITCONTROL);
 					
 					//Don't bother drawing anything else if the current message is at the top.
-					if (textY < 0) break;
+					if (textY < 48) break;
 					
 					//Draw the username
 					textY -= 25;
 					SetTextColor(hdc, RGB(255, 255, 255)); //TODO: draw username with the right color
 					ExtTextOut(hdc, textRect.left, textY, NULL, NULL, to_wstring((long long)pData->messages.at(i).authorID).c_str(), to_wstring((long long)pData->messages.at(i).authorID).length(), NULL);
 				}
+				
+				//Draw the header
+				unsigned int channelHeaderX = 50;
+				SetDCPenColor(hdc, mainGrayColor);
+				SetBkColor(hdc, mainGrayColor);
+				SelectObject(hdc, mainGrayColorBrush);
+				Rectangle(hdc, 0, 0, width, 48);
+				//Draw the pound sign
+				SelectObject(iconHDC, hBmpLargePoundSign);
+				BitBlt(hdc, 18, 15, 20, 18, iconHDC, 0, 0, SRCCOPY);
+				//Draw the channel name
+				SelectObject(hdc, channelNameFont);
+				SetTextColor(hdc, RGB(255, 255, 255));
+				//ExtTextOut(hdc, 50, 15, NULL, NULL, selectedChannelName.c_str(), selectedChannelName.length(), NULL);
+				textRect.left = 50;
+				textRect.top = 15;
+				textRect.bottom = 35;
+				textRect.right = (width - 15) - 225;
+				DrawText(hdc, selectedChannelName.c_str(), selectedChannelName.length(), &textRect, DT_SINGLELINE | DT_WORDBREAK | DT_NOPREFIX | DT_END_ELLIPSIS | DT_CALCRECT);
+				channelHeaderX += (textRect.right - textRect.left) + 16;
+				DrawText(hdc, selectedChannelName.c_str(), selectedChannelName.length(), &textRect, DT_SINGLELINE | DT_WORDBREAK | DT_NOPREFIX | DT_END_ELLIPSIS);
+				//Draw the 24-pixel vertical gray line after the channel name
+				SetDCPenColor(hdc, RGB(66,69,74));
+				MoveToEx(hdc, channelHeaderX, 12, NULL);
+				LineTo(hdc, channelHeaderX, 36);
+				//Draw the channel topic
+				SelectObject(hdc, smallInfoFont);
+				SetTextColor(hdc, RGB(185,187,190));
+				channelHeaderX += 16;
+				textRect.left = channelHeaderX;
+				textRect.right = (width - (15 + 225));
+				DrawText(hdc, L"General lobby to mingle and get to know other users. If your topic pertains to an existing category/channel however please post it there.", 137, &textRect, DT_SINGLELINE | DT_WORDBREAK | DT_NOPREFIX | DT_END_ELLIPSIS);
+				
 				
 				//Update the scrollbar
 				pData->totalContentHeight = totalContentHeight;
@@ -2308,10 +2514,12 @@ LRESULT CALLBACK contentAreaProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 				si.fMask = SIF_RANGE | SIF_PAGE;// | SIF_POS;
 				//si.nMin = 0;
 				si.nMax = totalContentHeight;
-				si.nPage = height;
+				si.nPage = height - 48;
 				//si.nPos = 10000;
 				//si.nTrackPos = 0;
 				SetScrollInfo(pData->hwndScrollbar, SB_CTL, &si, true);
+				
+				DeleteDC(iconHDC);
 			}
 			SelectObject(hdc, originalGDIObj);
 			EndPaint(wnd, &ps);
@@ -2357,7 +2565,7 @@ LRESULT CALLBACK contentAreaProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 				si.fMask = SIF_RANGE | SIF_PAGE;
 				si.nMin = 0;
 				si.nMax = pData->totalContentHeight;
-				si.nPage = h;
+				si.nPage = h - 48;
 				//si.nPos = 10000;
 				si.nTrackPos = 0;
 				SetScrollInfo(pData->hwndScrollbar, SB_CTL, &si, true);
