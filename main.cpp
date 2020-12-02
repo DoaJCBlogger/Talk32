@@ -58,6 +58,11 @@ LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
 void AddMenus(HWND);
 bool login(bool, bool offlineMode = false);
 wstring getUserAgent();
+void copyText(string text);
+void copyUnicodeText(wstring text);
+wstring getUserName(uint64_t id);
+wstring getUserNameWithDiscriminator(uint64_t id);
+HBITMAP getUserAvatar(uint64_t id);
 
 //Contains a font fix provided by "Christopher Janzon" on stackoverflow.com
 //https://stackoverflow.com/a/17075471
@@ -83,6 +88,8 @@ wstring getUserAgent();
 #define IDM_VOICE_CHANNEL_HIDE_NAMES 19
 #define IDM_VOICE_CHANNEL_INVITE 20
 #define IDM_VOICE_CHANNEL_COPY_ID 21
+#define IDM_CHANNEL_GROUP_COLLAPSE_UNREAD 22
+#define IDM_COPY_SERVER_ID 23
 
 #define IDC_AUTHTOKENFIELD 7
 
@@ -206,6 +213,7 @@ struct ServerListData {
 	HWND hwndScrollbar;
 	int serverHoverIdx;
 	long scrollPos;
+	unsigned long long rightClickItemID;
 	vector<ServerListItem> dataModel;
 	ServerListData():hwndScrollbar(NULL),serverHoverIdx(-1){}
 };
@@ -217,6 +225,7 @@ struct ChannelItem {
 	bool locked;
 	bool unread;
 	bool hideVoiceChannelMembers;
+	int notificationSetting;
 };
 
 struct ChannelGroup {
@@ -225,9 +234,18 @@ struct ChannelGroup {
 	unsigned long long id;
 	bool IsCategory;
 	bool IsExpanded;
+	bool collapseUnread;
+};
+
+struct User {
+	wstring name;
+	uint64_t discriminator;
+	uint64_t id;
+	HBITMAP hbmIcon;
 };
 
 vector<ServerListItem> globalServerIconList;
+vector<User> globalUserList;
 
 /*struct LeftSidebarItem {
 	wstring name;
@@ -242,6 +260,7 @@ struct LeftSidebarData {
 	int selectedIdx;
 	int hoverIdx;
 	unsigned long long selectedChannelID;
+	unsigned long long rightClickItemID;
 	vector<ChannelGroup> dataModel;
 	LeftSidebarData():hwndScrollbar(NULL),scrollPos(0){}
 };
@@ -1059,6 +1078,50 @@ bool login(bool clearAuthPage, bool offlineMode) {
 			}
 			server.FindMember("id");
 		}
+		
+		//Get the user list
+		//users [array of users]
+		iter = cacheDocument.FindMember("users");
+		if (iter != cacheDocument.MemberEnd() && cacheDocument["users"].IsArray()) {
+			Value& userArray = cacheDocument["users"];
+			long long arraySize = userArray.Size();
+			Value user;
+
+			//bool shouldAddEntry;
+			globalUserList.clear();
+			User u;
+			Gdiplus::Color serverListBG; //TODO: possibly change this
+			serverListBG.SetFromCOLORREF(serverListColor);
+			wstring iconFilename;
+			for (int i = 0; i < arraySize; i++) {
+				//shouldAddEntry = true;
+				user = userArray[i];//.GetUint64();
+
+				//Get the name
+				if (!(user.HasMember("name") && user["name"].IsString())) continue;
+				u.name = utf8_to_wstring(user["name"].GetString());
+				
+				//Get the discriminator
+				if (!(user.HasMember("discriminator") && user["discriminator"].IsUint64())) continue;
+				u.discriminator = user["discriminator"].GetUint64();
+
+				//Get the id
+				if (!(user.HasMember("id") && user["id"].IsUint64())) continue;
+				u.id = user["id"].GetUint64();
+
+				//Get the avatar
+				if (user.HasMember("avatar") && user["avatar"].IsString()) {
+					iconFilename = cacheDir + L"\\users\\" + to_wstring(u.id) + L"\\" + utf8_to_wstring(user["avatar"].GetString());
+					Gdiplus::Bitmap bmp(iconFilename.c_str(), false);
+					bmp.GetHBITMAP(serverListBG, &u.hbmIcon);
+				} else {
+					u.hbmIcon = NULL;
+				}
+				
+				globalUserList.push_back(u);
+			}
+			user.FindMember("id");
+		}
 	}
 
 	//Clear the auth page if necessary
@@ -1122,6 +1185,7 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 				c.voiceChannel = true;
 				c.hideVoiceChannelMembers = true;
 				cg.IsExpanded = true;
+				cg.collapseUnread = false;
 				cg.channels.push_back(c);
 
 				c.name = L"soldiers only";
@@ -1155,6 +1219,7 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 				c.name = L"afk";
 				c.unread = false;
 				c.locked = false;
+				c.id = 693179154467782736;
 				cg.channels.push_back(c);
 
 				pData->dataModel.push_back(cg);
@@ -1167,10 +1232,13 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 				c.unread = true;
 				c.locked = false;
 				c.voiceChannel = false;
+				c.id = 580437515954159648;
+				cg.id = 587110876210003978;
 				cg.channels.push_back(c);
 
 				c.name = L"introduce-yourself";
 				c.unread = false;
+				c.id = 580514338897395742;
 				cg.channels.push_back(c);
 
 				c.name = L"swarm-only";
@@ -1211,12 +1279,15 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 				c.unread = true;
 				c.locked = false;
 				c.voiceChannel = false;
+				c.id = 713492533417607278;
+				cg.id = 713492198447906908;
 				cg.channels.push_back(c);
 
 				c.name = L"hackerspace";
 				c.unread = false;
 				c.voiceChannel = true;
 				cg.channels.push_back(c);
+				c.id = 713492644906401892;
 				pData->dataModel.push_back(cg);
 				
 				cg.channels.clear();
@@ -1577,7 +1648,7 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 					AppendMenuW(hRightClickMenu, MF_STRING, IDM_REFRESH, L"Privacy Settings");
 					AppendMenuW(hRightClickMenu, MF_STRING, IDM_REFRESH, L"Change Nickname");
 					AppendMenuW(hRightClickMenu, MF_STRING, IDM_REFRESH, L"Leave Server");
-					AppendMenuW(hRightClickMenu, MF_STRING, IDM_REFRESH, L"Copy ID");
+					AppendMenuW(hRightClickMenu, MF_STRING, IDM_COPY_SERVER_ID, L"Copy ID");
 					TrackPopupMenu(hRightClickMenu, TPM_RIGHTBUTTON, mousePosition.x, mousePosition.y, 0, wnd, NULL);
 					DestroyMenu(hRightClickMenu);
 				} else {
@@ -1663,12 +1734,12 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 				POINT mousePosition;
 				mousePosition.x = xPos;
 				mousePosition.y = yPos;
+				ClientToScreen(wnd, &mousePosition);
 
 				wstring p = L"";
 				if (yPos < 50) {
 					//The user right-clicked in the server name area
 					HMENU hRightClickMenu = CreatePopupMenu();
-					ClientToScreen(wnd, &mousePosition);
 					AppendMenuW(hRightClickMenu, MF_STRING, IDM_REFRESH, L"Server Boost");
 					AppendMenuW(hRightClickMenu, MF_STRING, IDM_REFRESH, L"Mark As Read");
 					AppendMenuW(hRightClickMenu, MF_STRING, IDM_REFRESH, L"Invite People");
@@ -1677,7 +1748,7 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 					AppendMenuW(hRightClickMenu, MF_STRING, IDM_REFRESH, L"Privacy Settings");
 					AppendMenuW(hRightClickMenu, MF_STRING, IDM_REFRESH, L"Change Nickname");
 					AppendMenuW(hRightClickMenu, MF_STRING, IDM_REFRESH, L"Leave Server");
-					AppendMenuW(hRightClickMenu, MF_STRING, IDM_REFRESH, L"Copy ID");
+					AppendMenuW(hRightClickMenu, MF_STRING, IDM_COPY_SERVER_ID, L"Copy ID");
 					TrackPopupMenu(hRightClickMenu, TPM_RIGHTBUTTON, mousePosition.x, mousePosition.y, 0, wnd, NULL);
 					DestroyMenu(hRightClickMenu);
 				} else {
@@ -1690,17 +1761,38 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 						itemIdx++;
 						if (itemIdx == actualHoverIdx) {
 							//The user right-clicked a channel group
+							pData->rightClickItemID = pData->dataModel.at(i).id;
+							HMENU hMenu = CreatePopupMenu();
+							HMENU hMenuMuteChannel = CreatePopupMenu();
+							HMENU hMenuNotificationSettings = CreatePopupMenu();
+							AppendMenuW(hMenu, MF_STRING, IDM_CHANNEL_MARK_AS_READ, L"Mark As Read");
+							
+							AppendMenuW(hMenuMuteChannel, MF_STRING, IDM_MUTE_15_MINUTE, L"For 15 Minutes");
+							AppendMenuW(hMenuMuteChannel, MF_STRING, IDM_MUTE_1_HOUR, L"For 1 Hour");
+							AppendMenuW(hMenuMuteChannel, MF_STRING, IDM_MUTE_8_HOUR, L"For 8 Hours");
+							AppendMenuW(hMenuMuteChannel, MF_STRING, IDM_MUTE_24_HOUR, L"For 24 Hours");
+							AppendMenuW(hMenuMuteChannel, MF_STRING, IDM_MUTE, L"Until I turn it back on");
+							AppendMenuW(hMenu, MF_STRING | MF_POPUP, (UINT_PTR)hMenuMuteChannel, L"Mute Category");
+							
+							AppendMenuW(hMenu, MF_STRING, IDM_CHANNEL_GROUP_COLLAPSE_UNREAD, L"Collapse Category");
+							CheckMenuItem(hMenu, IDM_CHANNEL_GROUP_COLLAPSE_UNREAD, pData->dataModel.at(i).collapseUnread ? MF_CHECKED : MF_UNCHECKED);
 
+							AppendMenuW(hMenu, MF_STRING, IDM_COPY_CHANNEL_ID, L"Copy ID");
+							TrackPopupMenu(hMenu, TPM_RIGHTBUTTON, mousePosition.x, mousePosition.y, 0, wnd, NULL);
+							
+							DestroyMenu(hMenuNotificationSettings);
+							DestroyMenu(hMenuMuteChannel);
+							DestroyMenu(hMenu);
 							//Stop the loop
 							break;
 						}
-						//If the user right-clicked a channel then show a content menu
+						//If the user right-clicked a channel then show a context menu
 						if (pData->dataModel.at(i).IsExpanded) {
 							bool shouldStopSearchingForClickedItem = false;
 							for (unsigned int j = 0; j < pData->dataModel.at(i).channels.size(); j++) {
 								itemIdx++;
 								if (itemIdx == actualHoverIdx) {
-									ClientToScreen(wnd, &mousePosition);
+									pData->rightClickItemID = pData->dataModel.at(i).channels.at(j).id;
 									if (!pData->dataModel.at(i).channels.at(j).voiceChannel) {
 										//The user right-clicked a text channel
 										/*selectedChannel = pData->dataModel.at(i).channels.at(j).id;
@@ -1725,7 +1817,24 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 										AppendMenuW(hMenuNotificationSettings, MF_STRING, IDM_NOTIFICATIONS_ALL, L"All Messages");
 										AppendMenuW(hMenuNotificationSettings, MF_STRING, IDM_NOTIFICATIONS_ONLY_MENTIONS, L"Only @mentions");
 										AppendMenuW(hMenuNotificationSettings, MF_STRING, IDM_NOTIFICATIONS_NONE, L"Nothing");
-										CheckMenuRadioItem(hMenuNotificationSettings, IDM_NOTIFICATIONS_DEFAULT, IDM_NOTIFICATIONS_NONE, IDM_NOTIFICATIONS_DEFAULT, MF_BYCOMMAND);
+										
+										int notificationSetting;
+										switch (pData->dataModel.at(i).channels.at(j).notificationSetting) {
+											case 3:
+												notificationSetting = IDM_NOTIFICATIONS_NONE;
+											break;
+											case 2:
+												notificationSetting = IDM_NOTIFICATIONS_ONLY_MENTIONS;
+											break;
+											case 1:
+												notificationSetting = IDM_NOTIFICATIONS_ALL;
+											break;
+											case 0:
+											default:
+												notificationSetting = IDM_NOTIFICATIONS_DEFAULT;
+											break;
+										}
+										CheckMenuRadioItem(hMenuNotificationSettings, IDM_NOTIFICATIONS_DEFAULT, IDM_NOTIFICATIONS_NONE, notificationSetting, MF_BYCOMMAND);
 										AppendMenuW(hMenu, MF_STRING | MF_POPUP, (UINT_PTR)hMenuNotificationSettings, L"Notification Settings");
 										
 										AppendMenuW(hMenu, MF_STRING, IDM_INVITE_TO_CHANNEL, L"Invite People");
@@ -1855,7 +1964,87 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 			switch(LOWORD(wParam)) {
 				case IDM_VOICE_CHANNEL_HIDE_NAMES:
 				{
-					
+					for (unsigned int i = 0; i < pData->dataModel.size(); i++) {
+						if (pData->dataModel.at(i).id == pData->rightClickItemID) {
+							//The user right-clicked a channel group
+							
+							//Stop the loop
+							break;
+						}
+						if (pData->dataModel.at(i).IsExpanded) {
+							bool shouldStopSearchingForClickedItem = false;
+							for (unsigned int j = 0; j < pData->dataModel.at(i).channels.size(); j++) {
+							}
+						}
+					}
+				}
+				break;
+				case IDM_CHANNEL_MARK_AS_READ:
+				{
+					bool shouldStop = false;
+					for (unsigned int i = 0; i < pData->dataModel.size() && !shouldStop; i++) {
+						if (pData->dataModel.at(i).id == pData->rightClickItemID) {
+							//The user wants to mark a channel group as read
+							for (unsigned int j = 0; j < pData->dataModel.at(i).channels.size(); j++) {
+								pData->dataModel.at(i).channels.at(j).unread = false;
+							}
+							
+							//Redraw the list
+							InvalidateRect(hwndLeftSidebar, NULL, TRUE);
+							UpdateWindow(hwndLeftSidebar);
+							
+							//Stop the loop
+							break;
+						}
+						if (pData->dataModel.at(i).IsExpanded) {
+							bool shouldStopSearchingForClickedItem = false;
+							for (unsigned int j = 0; j < pData->dataModel.at(i).channels.size(); j++) {
+								if (pData->dataModel.at(i).channels.at(j).id == pData->rightClickItemID) {
+									//The user wants to mark a channel as read
+									pData->dataModel.at(i).channels.at(j).unread = false;
+									
+									//Redraw the list
+									InvalidateRect(hwndLeftSidebar, NULL, TRUE);
+									UpdateWindow(hwndLeftSidebar);
+									
+									//Stop the loop
+									shouldStop = true;
+									break;
+								}
+							}
+						}
+					}
+				}
+				case IDM_COPY_CHANNEL_ID:
+				{
+					bool shouldStop = false;
+					for (unsigned int i = 0; i < pData->dataModel.size() && !shouldStop; i++) {
+						if (pData->dataModel.at(i).id == pData->rightClickItemID) {
+							//The user wants to copy the ID of a channel group
+							copyText(to_string((long long)pData->dataModel.at(i).id));
+							
+							//Stop the loop
+							break;
+						}
+						if (pData->dataModel.at(i).IsExpanded) {
+							bool shouldStopSearchingForClickedItem = false;
+							for (unsigned int j = 0; j < pData->dataModel.at(i).channels.size(); j++) {
+								if (pData->dataModel.at(i).channels.at(j).id == pData->rightClickItemID) {
+									//The user wants to copy the ID of a channel
+									copyText(to_string((long long)pData->dataModel.at(i).channels.at(j).id));
+									
+									//Stop the loop
+									shouldStop = true;
+									break;
+								}
+							}
+						}
+					}
+				}
+				break;
+				case IDM_COPY_SERVER_ID:
+				{
+					if (selectedServer != -1) copyText(to_string((long long)selectedServer));
 				}
 				break;
 			}
@@ -2052,6 +2241,15 @@ LRESULT CALLBACK serverListProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lParam
 					else if (config.roundServerIcons) {
 						BitBlt(maskedIconDC, 0, 0, 48, 48, maskDC, 0, 0, SRCAND);
 					}
+					
+					//If the server is selected, then we need to draw a white rounded rectangle on the left
+					if (pData->dataModel.at(j).id == selectedServer) {
+						SelectObject(hdc, GetStockBrush(WHITE_BRUSH));
+						SetDCPenColor(hdc, RGB(255, 255, 255));
+						RoundRect(hdc, -4, ((i + (pData->scrollPos < 56 ? 1 : 0)) * 56) + 8 + 14 - 10, 4, ((i + (pData->scrollPos < 56 ? 1 : 0)) * 56) + 8 + 14 + 20 + 10, 6, 6);
+					}
+					
+					//Draw the icon
 					BitBlt(hdc, 12, ((i + (pData->scrollPos < 56 ? 1 : 0)) * 56) + 8, 48, 48, /*config.roundServerIcons ? */maskedIconDC/* : iconHDC*/, 0, 0, SRCPAINT); //The ternary expression for y is the spacing for the Home icon
 
 					i++;
@@ -2113,7 +2311,6 @@ LRESULT CALLBACK serverListProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lParam
 				if (hoverIdx == -1 || hoverIdx > pData->dataModel.size() + 1) {
 					SetCursor(LoadCursor(0, IDC_ARROW));
 				} else {
-					//TODO: Don't use the hand icon for empty server icon spaces
 					SetCursor(LoadCursor(0, IDC_HAND));
 				}
 
@@ -2165,6 +2362,10 @@ LRESULT CALLBACK serverListProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lParam
 					selectedServer = pData->dataModel.at(pData->serverHoverIdx - 1).id;
 					selectedServerName = pData->dataModel.at(pData->serverHoverIdx - 1).name;
 					
+					//Redraw the server list
+					InvalidateRect(hwndServerList, NULL, TRUE);
+					UpdateWindow(hwndServerList);
+					
 					//Redraw the left sidebar
 					InvalidateRect(hwndLeftSidebar, NULL, TRUE);
 					UpdateWindow(hwndLeftSidebar);
@@ -2177,7 +2378,10 @@ LRESULT CALLBACK serverListProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lParam
 				//Handle right clicks
 				mousePosition.x = GET_X_LPARAM(lParam);
 				mousePosition.y = GET_Y_LPARAM(lParam);
-				if (pData->serverHoverIdx != -1) {
+				//Only create a context menu for server icons (don't create one for Home or Explore)
+				if (pData->serverHoverIdx > 0 && pData->serverHoverIdx <= pData->dataModel.size()) {
+					pData->rightClickItemID = pData->dataModel.at(pData->serverHoverIdx - 1).id;
+					
 					HMENU hRightClickMenu = CreatePopupMenu();
 					ClientToScreen(hwndMainWin, &mousePosition);
 					AppendMenuW(hRightClickMenu, MF_STRING, IDM_REFRESH, L"Mark as read");
@@ -2187,7 +2391,7 @@ LRESULT CALLBACK serverListProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lParam
 					AppendMenuW(hRightClickMenu, MF_STRING, IDM_REFRESH, L"Privacy Settings");
 					AppendMenuW(hRightClickMenu, MF_STRING, IDM_REFRESH, L"Change Nickname");
 					AppendMenuW(hRightClickMenu, MF_STRING, IDM_REFRESH, L"Leave Server");
-					AppendMenuW(hRightClickMenu, MF_STRING, IDM_REFRESH, L"Copy ID");
+					AppendMenuW(hRightClickMenu, MF_STRING, IDM_COPY_SERVER_ID, L"Copy ID");
 					if (!offlineModeEnabled) AppendMenuW(hRightClickMenu, MF_STRING, IDM_REFRESH, L"Add to Cache");
 					TrackPopupMenu(hRightClickMenu, TPM_RIGHTBUTTON, mousePosition.x, mousePosition.y, 0, wnd, NULL);
 					DestroyMenu(hRightClickMenu);
@@ -2285,7 +2489,19 @@ LRESULT CALLBACK serverListProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lParam
 		case WM_COMMAND:
 			{
 				switch(LOWORD(wParam)) {
-
+					case IDM_COPY_SERVER_ID:
+					{
+						//We have to search for the server by ID rather than retrieving it by its index,
+						//because the server could have disappeared from the list in the time between
+						//right-clicking it and clicking Copy ID.
+						for (unsigned int i = 0; i < pData->dataModel.size(); i++) {
+							if (pData->dataModel.at(i).id == pData->rightClickItemID) {
+								copyText(to_string((long long)pData->dataModel.at(i).id));
+								break;
+							}
+						}
+					}
+					break;
 				}
 			}
 		break;
@@ -2446,11 +2662,31 @@ LRESULT CALLBACK contentAreaProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 				//textRect.right = 73 + (width - 146);
 				//textRect.bottom = 100;
 				
+				//Set up masking
+				HDC maskDC = CreateCompatibleDC(NULL);
+				HDC maskedIconDC = CreateCompatibleDC(hdc);
+				HBITMAP roundMaskBmp = CreateCompatibleBitmap(maskDC, 40, 40);
+				HBITMAP maskedIconBmp = CreateCompatibleBitmap(hdc, 40, 40);
+				SetBkColor(maskDC, RGB(0, 0, 0));
+				SetDCPenColor(maskDC, RGB(255, 255, 255));
+				SelectObject(maskDC, GetStockBrush(WHITE_BRUSH));
+				SelectObject(maskDC, roundMaskBmp);
+				SelectObject(maskedIconDC, maskedIconBmp);
+
+				RECT _40x40;
+				_40x40.left = 0;
+				_40x40.top = 0;
+				_40x40.right = 41;
+				_40x40.bottom = 41;
+				FillRect(maskDC, &_40x40, GetStockBrush(BLACK_BRUSH));
+				Ellipse(maskDC, 0, 0, 40, 40);
+				
 				unsigned int textY = height;
 				unsigned int messageWidth = width - 146;
 				unsigned int messageHeight;
 				unsigned int messageSpacing = 20;
 				unsigned long long totalContentHeight = 0;
+				wstring username;
 				for (unsigned int i = 0; i < pData->messages.size(); i++) {
 					messageHeight = getMessageHeight(hdc, messageWidth, pData->messages.at(i).text);
 					pData->messages.at(i).messageHeight = messageHeight + messageSpacing;
@@ -2470,7 +2706,18 @@ LRESULT CALLBACK contentAreaProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 					//Draw the username
 					textY -= 25;
 					SetTextColor(hdc, RGB(255, 255, 255)); //TODO: draw username with the right color
-					ExtTextOut(hdc, textRect.left, textY, NULL, NULL, to_wstring((long long)pData->messages.at(i).authorID).c_str(), to_wstring((long long)pData->messages.at(i).authorID).length(), NULL);
+					username = getUserNameWithDiscriminator(pData->messages.at(i).authorID);
+					ExtTextOut(hdc, textRect.left, textY, NULL, NULL, username.c_str(), username.length(), NULL);
+					
+					//Draw the avatar
+					userIcon = getUserAvatar(pData->messages.at(i).authorID);
+					if (userIcon) {
+						SelectObject(iconHDC, userIcon);
+						GetObject(userIcon, sizeof(bmp), &bmp);
+						StretchBlt(maskedIconDC, 0, 0, 40, 40, iconHDC, 0, 0, bmp.bmWidth, bmp.bmHeight, SRCCOPY);
+						BitBlt(maskedIconDC, 0, 0, 48, 48, maskDC, 0, 0, SRCAND);
+						BitBlt(hdc, 16, textY - 1, 40, 40, maskedIconDC, 0, 0, SRCPAINT);
+					}
 				}
 				
 				//Draw the header
@@ -2519,6 +2766,10 @@ LRESULT CALLBACK contentAreaProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 				//si.nTrackPos = 0;
 				SetScrollInfo(pData->hwndScrollbar, SB_CTL, &si, true);
 				
+				DeleteObject(maskedIconBmp);
+				DeleteObject(roundMaskBmp);
+				DeleteDC(maskedIconDC);
+				DeleteDC(maskDC);
 				DeleteDC(iconHDC);
 			}
 			SelectObject(hdc, originalGDIObj);
@@ -2879,4 +3130,51 @@ wstring getUserAgent() {
 	}
 	
 	return userAgent;
+}
+
+void copyText(string text) {
+	//Copied from user Judge Maygarden (https://stackoverflow.com/users/1491/judge-maygarden) on StackOverflow
+	//https://stackoverflow.com/a/1264179
+	HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, text.length() + 1);
+	memcpy(GlobalLock(hMem), text.c_str(), text.length() + 1);
+	GlobalUnlock(hMem);
+	OpenClipboard(0);
+	EmptyClipboard();
+	SetClipboardData(CF_TEXT, hMem);
+	CloseClipboard();
+	GlobalFree(hMem);
+}
+
+void copyUnicodeText(wstring text) {
+	//Copied from user Judge Maygarden (https://stackoverflow.com/users/1491/judge-maygarden) on StackOverflow
+	//https://stackoverflow.com/a/1264179
+	HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, (text.length() + 1) * sizeof(wchar_t));
+	memcpy(GlobalLock(hMem), text.c_str(), (text.length() + 1) * sizeof(wchar_t));
+	GlobalUnlock(hMem);
+	OpenClipboard(0);
+	EmptyClipboard();
+	SetClipboardData(CF_UNICODETEXT, hMem);
+	CloseClipboard();
+	GlobalFree(hMem);
+}
+
+wstring getUserName(uint64_t id) {
+	for (unsigned int i = 0; i < globalUserList.size(); i++) {
+		if (globalUserList.at(i).id == id) return globalUserList.at(i).name;
+	}
+	return L"Unknown user " + to_wstring((long long)id);
+}
+
+wstring getUserNameWithDiscriminator(uint64_t id) {
+	for (unsigned int i = 0; i < globalUserList.size(); i++) {
+		if (globalUserList.at(i).id == id) return globalUserList.at(i).name + L" #" + to_wstring((long long)globalUserList.at(i).discriminator);
+	}
+	return L"Unknown user " + to_wstring((long long)id);
+}
+
+HBITMAP getUserAvatar(uint64_t id) {
+	for (unsigned int i = 0; i < globalUserList.size(); i++) {
+		if (globalUserList.at(i).id == id) return globalUserList.at(i).hbmIcon;
+	}
+	return NULL;
 }
