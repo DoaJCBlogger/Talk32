@@ -118,6 +118,7 @@ struct ConfigObj {
 	wstring dataDir;
 	bool showUserList;
 	bool roundServerIcons;
+	bool roundUserAvatars;
 	unsigned int windowX;
 	unsigned int windowY;
 	unsigned int windowWidth;
@@ -136,8 +137,8 @@ bool RoundRectWidthHeight(HDC hdc, int x, int y, int w, int h, int rw, int rh);
 void SetRectXYWidthHeight(RECT* r, long x, long y, long w, long h);
 unsigned int getMessageHeight(HDC, unsigned int, wstring);
 size_t urlWriteCallback(char*, size_t, size_t, void*);
-HWND hwndMainWin, statusBar, authTokenBox, httpResponseLabel, loginBtn, hwndServerList, hwndLeftSidebar, hwndContentArea, offlineBtn;
-HBRUSH windowBGBrush, mainGrayColorBrush, discordBlueBtnBrush, discordBlueBtnHoverBrush, discordBlueBtnDownBrush, serverListColorBrush, sidebarColorBrush, serverListHoverColor, serverListSelectedColor;// = (HBRUSH)GetStockObject(WHITE_BRUSH);
+HWND hwndMainWin, statusBar, authTokenBox, messageField, httpResponseLabel, loginBtn, hwndServerList, hwndLeftSidebar, hwndContentArea, offlineBtn;
+HBRUSH windowBGBrush, mainGrayColorBrush, messageFieldBGBrush, discordBlueBtnBrush, discordBlueBtnHoverBrush, discordBlueBtnDownBrush, serverListColorBrush, sidebarColorBrush, serverListHoverColor, serverListSelectedColor;// = (HBRUSH)GetStockObject(WHITE_BRUSH);
 std::string data;
 std::string BearerToken;
 bool BearerTokenIsValid = false;
@@ -175,6 +176,7 @@ HFONT authTokenPromptFont;
 HFONT authTokenBoxFont;
 HFONT smallInfoFont;
 HFONT channelNameFont;
+HFONT userNameFont;
 HFONT channelGroupNameFont;
 HFONT smallHeaderFont;
 HFONT smallHeaderFont500Weight;
@@ -468,6 +470,12 @@ bool loadOrCreateConfig() {
 		if (iter != configDocument.MemberEnd()) {
 			config.roundServerIcons = configDocument["round_server_icons"].GetBool();
 		}
+		
+		//round_user_avatars (boolean)
+		iter = configDocument.FindMember("round_user_avatars");
+		if (iter != configDocument.MemberEnd()) {
+			config.roundUserAvatars = configDocument["round_user_avatars"].GetBool();
+		}
 
 		//Window position (array of x,y,w,h)
 		iter = configDocument.FindMember("window_pos");
@@ -508,6 +516,7 @@ void saveConfig() {
 	d.AddMember(L"token", StringRef(config.authToken), allocator);
 	d.AddMember(L"showUserList", config.showUserList, allocator);
 	d.AddMember(L"round_server_icons", config.roundServerIcons, allocator);
+	d.AddMember(L"round_user_avatars", config.roundUserAvatars, allocator);
 
 	RECT r;
 	if (GetWindowRect(hwndMainWin, &r)) {
@@ -641,6 +650,7 @@ int WINAPI WinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLin
 	serverListHoverColor = CreateSolidBrush(RGB(52,55,60));
 	serverListSelectedColor = CreateSolidBrush(RGB(57,60,67));
 	mainGrayColorBrush = CreateSolidBrush(mainGrayColor);
+	messageFieldBGBrush = CreateSolidBrush(RGB(64, 68, 75));
 	discordBlueBtnBrush = CreateSolidBrush(discordBlueBtnColor);
 	discordBlueBtnHoverBrush = CreateSolidBrush(discordBlueBtnHoverColor);
 	discordBlueBtnDownBrush = CreateSolidBrush(discordBlueBtnDownColor);
@@ -768,6 +778,7 @@ LRESULT CALLBACK WndProc( HWND hwndMainWin, UINT msg, WPARAM wParam, LPARAM lPar
 			authTokenBoxFont = CreateFont(20, 0, 0, 0, 400, false, false, 0, 0, 0, 0, 0, 0, L"Roboto");
 			smallInfoFont = CreateFont(18, 0, 0, 0, 400, false, false, 0, 0, 0, 0, 0, 0, L"Roboto Thin");
 			channelNameFont = CreateFont(18, 0, 0, 0, 400, false, false, 0, 0, 0, 0, 0, 0, L"Roboto");
+			userNameFont = CreateFont(19, 0, 0, 0, 400, false, false, 0, 0, 0, 0, 0, 0, L"Roboto");
 			channelGroupNameFont = CreateFont(13, 0, 0, 0, 400, false, false, 0, 0, 0, 0, 0, 0, L"Roboto");
 			hoverBtnFont = CreateFont(18, 0, 0, 0, 400, false, false, 0, 0, 0, 0, 0, 0, L"Roboto");
 		
@@ -919,6 +930,7 @@ LRESULT CALLBACK WndProc( HWND hwndMainWin, UINT msg, WPARAM wParam, LPARAM lPar
 			DeleteObject(serverListSelectedColor);
 			DeleteObject(sidebarColorBrush);
 			DeleteObject(serverListColorBrush);
+			DeleteObject(messageFieldBGBrush);
 			DeleteObject(mainGrayColorBrush);
 			DeleteObject(windowBGBrush);
 			DeleteObject(discordBlueBtnDownBrush);
@@ -941,10 +953,12 @@ LRESULT CALLBACK WndProc( HWND hwndMainWin, UINT msg, WPARAM wParam, LPARAM lPar
 			DeleteObject(authTokenPromptFont);
 			DeleteObject(authTokenBoxFont);
 			DeleteObject(channelGroupNameFont);
+			DeleteObject(userNameFont);
 			DeleteObject(channelNameFont);
 			DeleteObject(smallInfoFont);
 			DeleteObject(smallHeaderFont);
 			DeleteObject(smallHeaderFont500Weight);
+			RemoveFontResourceEx(L"fonts\\Roboto-Thin.ttf", FR_PRIVATE, NULL);
 			RemoveFontResourceEx(L"fonts\\Roboto-Regular.ttf", FR_PRIVATE, NULL);
 			
 			PostQuitMessage(0);
@@ -2608,6 +2622,10 @@ LRESULT CALLBACK contentAreaProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 			si.nPos = 10000;
 			si.nTrackPos = 0;
 			SetScrollInfo(pData->hwndScrollbar, SB_CTL, &si, true);
+			
+			//Create the message field
+			messageField = CreateWindowW(L"Edit", NULL, WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 72, h - 36, w - (72 + 15), 20, wnd, (HMENU)IDC_AUTHTOKENFIELD, NULL, NULL);
+			SendMessage(messageField, WM_SETFONT, (LPARAM)userNameFont, true);
 		}
 		break;
 		/*case WM_NCDESTROY:
@@ -2681,7 +2699,7 @@ LRESULT CALLBACK contentAreaProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 				FillRect(maskDC, &_40x40, GetStockBrush(BLACK_BRUSH));
 				Ellipse(maskDC, 0, 0, 40, 40);
 				
-				unsigned int textY = height;
+				unsigned int textY = height - 24; //The "- 24" keeps the lowest message from ending up behind message field
 				unsigned int messageWidth = width - 146;
 				unsigned int messageHeight;
 				unsigned int messageSpacing = 20;
@@ -2698,14 +2716,16 @@ LRESULT CALLBACK contentAreaProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 					
 					//Draw the text
 					SetTextColor(hdc, messageTextColor);
+					SelectObject(hdc, smallInfoFont);
 					DrawText(hdc, pData->messages.at(i).text.c_str(), pData->messages.at(i).text.length(), &textRect, DT_WORDBREAK | DT_EDITCONTROL);
 					
 					//Don't bother drawing anything else if the current message is at the top.
 					if (textY < 48) break;
 					
 					//Draw the username
-					textY -= 25;
+					textY -= 22;
 					SetTextColor(hdc, RGB(255, 255, 255)); //TODO: draw username with the right color
+					SelectObject(hdc, userNameFont);
 					username = getUserNameWithDiscriminator(pData->messages.at(i).authorID);
 					ExtTextOut(hdc, textRect.left, textY, NULL, NULL, username.c_str(), username.length(), NULL);
 					
@@ -2715,7 +2735,7 @@ LRESULT CALLBACK contentAreaProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 						SelectObject(iconHDC, userIcon);
 						GetObject(userIcon, sizeof(bmp), &bmp);
 						StretchBlt(maskedIconDC, 0, 0, 40, 40, iconHDC, 0, 0, bmp.bmWidth, bmp.bmHeight, SRCCOPY);
-						BitBlt(maskedIconDC, 0, 0, 48, 48, maskDC, 0, 0, SRCAND);
+						if (config.roundUserAvatars) BitBlt(maskedIconDC, 0, 0, 48, 48, maskDC, 0, 0, SRCAND);
 						BitBlt(hdc, 16, textY - 1, 40, 40, maskedIconDC, 0, 0, SRCPAINT);
 					}
 				}
@@ -2752,6 +2772,13 @@ LRESULT CALLBACK contentAreaProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 				textRect.right = (width - (15 + 225));
 				DrawText(hdc, L"General lobby to mingle and get to know other users. If your topic pertains to an existing category/channel however please post it there.", 137, &textRect, DT_SINGLELINE | DT_WORDBREAK | DT_NOPREFIX | DT_END_ELLIPSIS);
 				
+				//Draw the text field at the bottom
+				//44 px for the text field
+				//4 px of padding under it
+				//48 px total
+				SetDCPenColor(hdc, RGB(64, 68, 75));
+				SelectObject(hdc, messageFieldBGBrush);
+				RoundRectWidthHeight(hdc, 16, height - 48, width - (25 + 16), 44, 16, 16);
 				
 				//Update the scrollbar
 				pData->totalContentHeight = totalContentHeight;
@@ -2809,6 +2836,9 @@ LRESULT CALLBACK contentAreaProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 				int w = r.right - r.left;
 				int h = r.bottom - r.top;
 				MoveWindow(pData->hwndScrollbar, r.right - 15, 0, 15, h, TRUE);
+				
+				//Move the message field
+				MoveWindow(messageField, 72, h - 36, w - (72 + 15 + 15 /* the extra 15 is needed because we didn't subtract 15 from the width like we did when the field was created */), 20, TRUE);
 
 				SCROLLINFO si = {0};
 				GetScrollInfo(pData->hwndScrollbar, SB_CTL, &si);
@@ -2816,7 +2846,7 @@ LRESULT CALLBACK contentAreaProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 				si.fMask = SIF_RANGE | SIF_PAGE;
 				si.nMin = 0;
 				si.nMax = pData->totalContentHeight;
-				si.nPage = h - 48;
+				si.nPage = h - (48 + 48); //48px for the header and 48px for the message field
 				//si.nPos = 10000;
 				si.nTrackPos = 0;
 				SetScrollInfo(pData->hwndScrollbar, SB_CTL, &si, true);
@@ -2877,6 +2907,8 @@ LRESULT CALLBACK contentAreaProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 					RECT r;
 					GetClientRect(wnd, &r);
 					r.right -= 15;
+					r.top += 48; //Don't scroll the header
+					r.bottom -= 48; //Don't scroll the message field
 					ScrollWindow(wnd, 0, 75 * (yPos - si.nPos), &r, &r);
 					InvalidateRect(wnd, &r, FALSE); //TODO: Optimize this so items that were scrolled and are still visible aren't redrawn.
 					//UpdateWindow(wnd);
@@ -2891,6 +2923,23 @@ LRESULT CALLBACK contentAreaProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 
 				}
 			}
+		break;
+		case WM_CTLCOLOREDIT:
+			if ((HWND)lParam == messageField) {
+				hdc = (HDC)wParam;
+
+				//Background when typing
+				SetBkColor(hdc, RGB(64, 68, 75));
+				SetTextColor(hdc, RGB(200, 200, 200));
+
+				//Background when empty
+				SetDCBrushColor(hdc, RGB(64, 68, 75));
+				return (LRESULT)GetStockObject(DC_BRUSH);
+			}
+		break;
+		case WM_DESTROY:
+			DestroyWindow(messageField);
+			return 0;
 		break;
 		default:
 			return DefWindowProcW(wnd, msg, wParam, lParam);
