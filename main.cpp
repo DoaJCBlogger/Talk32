@@ -63,6 +63,7 @@ void copyUnicodeText(wstring text);
 wstring getUserName(uint64_t id);
 wstring getUserNameWithDiscriminator(uint64_t id);
 HBITMAP getUserAvatar(uint64_t id);
+void submitMessage();
 
 //Contains a font fix provided by "Christopher Janzon" on stackoverflow.com
 //https://stackoverflow.com/a/17075471
@@ -92,11 +93,14 @@ HBITMAP getUserAvatar(uint64_t id);
 #define IDM_COPY_SERVER_ID 23
 
 #define IDC_AUTHTOKENFIELD 7
+#define IDC_MESSAGEFIELD 8
 
 #define AUTH_TOKEN_FIELD_WIDTH 600
 
 #define MINIMUM_WINDOW_WIDTH 985
 #define MINIMUM_WINDOW_HEIGHT 480
+
+#define DISCORD_MAX_CHARACTERS 2000
 
 const wstring versionString = L"Talk32 v0.1";
 
@@ -248,6 +252,7 @@ struct User {
 
 vector<ServerListItem> globalServerIconList;
 vector<User> globalUserList;
+struct ContentAreaData *globalContentAreaData;
 
 /*struct LeftSidebarItem {
 	wstring name;
@@ -2546,6 +2551,7 @@ LRESULT CALLBACK contentAreaProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 		case WM_NCCREATE:
 			pData = new ContentAreaData();
 			if (pData == NULL) return FALSE;
+			globalContentAreaData = pData;
 			SetWindowLongPtr(wnd, 0, (LONG_PTR)pData);
 			pData->scrollPos = 0;
 			pData->totalContentHeight = 0;
@@ -2624,8 +2630,9 @@ LRESULT CALLBACK contentAreaProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 			SetScrollInfo(pData->hwndScrollbar, SB_CTL, &si, true);
 			
 			//Create the message field
-			messageField = CreateWindowW(L"Edit", NULL, WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 72, h - 36, w - (72 + 15), 20, wnd, (HMENU)IDC_AUTHTOKENFIELD, NULL, NULL);
+			messageField = CreateWindowW(L"Edit", NULL, WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 72, h - 36, w - (72 + 15), 20, wnd, (HMENU)IDC_MESSAGEFIELD, NULL, NULL);
 			SendMessage(messageField, WM_SETFONT, (LPARAM)userNameFont, true);
+			SetWindowLongPtr(messageField, GWLP_WNDPROC, (LONG_PTR)editProc);
 		}
 		break;
 		/*case WM_NCDESTROY:
@@ -3081,6 +3088,8 @@ LRESULT CALLBACK editProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lParam)
 				case VK_RETURN:
 				if (wnd == authTokenBox) {
 					login(true);
+				} else if (wnd == messageField) {
+					submitMessage();
 				}
 				return 0;
 				break;  //or return 0; if you don't want to pass it further to def proc
@@ -3226,4 +3235,18 @@ HBITMAP getUserAvatar(uint64_t id) {
 		if (globalUserList.at(i).id == id) return globalUserList.at(i).hbmIcon;
 	}
 	return NULL;
+}
+
+void submitMessage() {
+	WCHAR buffer[DISCORD_MAX_CHARACTERS];
+	GetWindowText(messageField, buffer, DISCORD_MAX_CHARACTERS);
+	
+	Message m;
+	m.authorID = 580427633351720961;
+	m.id = 0;
+	m.text = wstring(buffer);
+	globalContentAreaData->messages.insert(globalContentAreaData->messages.begin(), m);
+	InvalidateRect(hwndContentArea, NULL, true);
+	
+	SetWindowText(messageField, L"");
 }
