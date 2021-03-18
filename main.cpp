@@ -64,6 +64,7 @@ wstring getUserName(uint64_t id);
 wstring getUserNameWithDiscriminator(uint64_t id);
 HBITMAP getUserAvatar(uint64_t id);
 void submitMessage();
+void recalculateTotalMessageHeight(bool);
 
 //Contains a font fix provided by "Christopher Janzon" on stackoverflow.com
 //https://stackoverflow.com/a/17075471
@@ -101,6 +102,7 @@ void submitMessage();
 #define MINIMUM_WINDOW_HEIGHT 480
 
 #define DISCORD_MAX_CHARACTERS 2000
+#define MESSAGE_SPACING 20
 
 const wstring versionString = L"Talk32 v0.1";
 
@@ -139,7 +141,7 @@ bool CALLBACK SetFont(HWND child, LPARAM font);
 bool RectangleWidthHeight(HDC hdc, int x, int y, int w, int h);
 bool RoundRectWidthHeight(HDC hdc, int x, int y, int w, int h, int rw, int rh);
 void SetRectXYWidthHeight(RECT* r, long x, long y, long w, long h);
-unsigned int getMessageHeight(HDC, unsigned int, wstring);
+unsigned int getMessageHeight(unsigned int, wstring);
 size_t urlWriteCallback(char*, size_t, size_t, void*);
 HWND hwndMainWin, statusBar, authTokenBox, messageField, httpResponseLabel, loginBtn, hwndServerList, hwndLeftSidebar, hwndContentArea, offlineBtn;
 HBRUSH windowBGBrush, mainGrayColorBrush, messageFieldBGBrush, discordBlueBtnBrush, discordBlueBtnHoverBrush, discordBlueBtnDownBrush, serverListColorBrush, sidebarColorBrush, serverListHoverColor, serverListSelectedColor;// = (HBRUSH)GetStockObject(WHITE_BRUSH);
@@ -253,6 +255,8 @@ struct User {
 vector<ServerListItem> globalServerIconList;
 vector<User> globalUserList;
 struct ContentAreaData *globalContentAreaData;
+HDC tempHDC;
+unsigned int messageWidth;
 
 /*struct LeftSidebarItem {
 	wstring name;
@@ -283,9 +287,11 @@ struct ContentAreaData {
 	vector<Message> messages;
 	HWND hwndScrollbar;
 	bool leftBtnDown;
-	long scrollPos;
+	unsigned long scrollPos;
 	unsigned long long totalContentHeight;
-	ContentAreaData():hwndScrollbar(NULL),scrollPos(0){}
+	int oldContentAreaWidth;
+	bool shouldScrollToBottom;
+	ContentAreaData():hwndScrollbar(NULL),scrollPos(0),shouldScrollToBottom(true){}
 };
 
 void drawAuthPage(HDC hdc, int w, int h) {
@@ -631,6 +637,9 @@ int WINAPI WinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLin
 		location = MainPage;
 	}
 	
+	//Create the temporary DC
+	tempHDC = CreateCompatibleDC(NULL);
+	
 	INITCOMMONCONTROLSEX iccx;
 	iccx.dwSize=sizeof(INITCOMMONCONTROLSEX);
 	iccx.dwICC=0;
@@ -718,6 +727,7 @@ int WINAPI WinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLin
 	}
 
 	Gdiplus::GdiplusShutdown(gPT);
+	DeleteDC(tempHDC);
 	return (int) msg.wParam;
 }
 
@@ -2617,9 +2627,9 @@ LRESULT CALLBACK contentAreaProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 			pData->hwndScrollbar = CreateWindowExW(NULL, L"SCROLLBAR",L"", WS_CHILD | SBS_VERT | WS_VISIBLE, r.right, 0, 15, height, wnd, (HMENU)NULL, (HINSTANCE)GetWindowLong(wnd, GWL_HINSTANCE), NULL);
 			int w = r.right - r.left;
 			int h = height;
-			MoveWindow(pData->hwndScrollbar, r.right - 15, 0, 15, h, TRUE);
+			MoveWindow(pData->hwndScrollbar, r.right - 15, 48, 15, h - 48, TRUE);
 
-			SCROLLINFO si = {0};
+			/*SCROLLINFO si = {0};
 			si.cbSize = sizeof(SCROLLINFO);
 			si.fMask = SIF_RANGE | SIF_PAGE | SIF_POS;
 			si.nMin = 0;
@@ -2627,7 +2637,7 @@ LRESULT CALLBACK contentAreaProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 			si.nPage = h;
 			si.nPos = 10000;
 			si.nTrackPos = 0;
-			SetScrollInfo(pData->hwndScrollbar, SB_CTL, &si, true);
+			SetScrollInfo(pData->hwndScrollbar, SB_CTL, &si, true);*/
 			
 			//Create the message field
 			messageField = CreateWindowW(L"Edit", NULL, WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 72, h - 36, w - (72 + 15), 20, wnd, (HMENU)IDC_MESSAGEFIELD, NULL, NULL);
@@ -2707,16 +2717,29 @@ LRESULT CALLBACK contentAreaProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 				Ellipse(maskDC, 0, 0, 40, 40);
 				
 				unsigned int textY = height - 24; //The "- 24" keeps the lowest message from ending up behind message field
-				unsigned int messageWidth = width - 146;
+				messageWidth = width - 146;
 				unsigned int messageHeight;
-				unsigned int messageSpacing = 20;
-				unsigned long long totalContentHeight = 0;
+				//unsigned long long totalContentHeight = 0;
 				wstring username;
-				for (unsigned int i = 0; i < pData->messages.size(); i++) {
-					messageHeight = getMessageHeight(hdc, messageWidth, pData->messages.at(i).text);
-					pData->messages.at(i).messageHeight = messageHeight + messageSpacing;
-					totalContentHeight += messageHeight + messageSpacing + 25;
-					textY -= messageHeight + messageSpacing;
+				long offScreenContentHeight = (pData->totalContentHeight - (height - (48 + 48)));
+				long pixelsToAdd = offScreenContentHeight - pData->scrollPos;
+				wstring debugStr = L"content height=" + to_wstring((long long)pData->totalContentHeight) + L", scrollPos=" + to_wstring((long long)pData->scrollPos);
+				//MessageBox(NULL, debugStr.c_str(), L"", MB_OK);
+				bool addOnce = false;
+				for (auto it = pData->messages.begin(); it != pData->messages.end(); it++) {
+					if (pixelsToAdd > 65) {
+						pixelsToAdd -= it->messageHeight;
+						continue;
+					}
+					if (!addOnce) {
+						textY += pixelsToAdd;
+						addOnce = true;
+					}
+					
+					messageHeight = it->messageHeight;//getMessageHeight(messageWidth, it->text);
+					//it->messageHeight = messageHeight;
+					//totalContentHeight += messageHeight + 25;
+					textY -= messageHeight;
 					
 					textRect.top = textY;
 					textRect.bottom = textY + messageHeight;
@@ -2724,7 +2747,7 @@ LRESULT CALLBACK contentAreaProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 					//Draw the text
 					SetTextColor(hdc, messageTextColor);
 					SelectObject(hdc, smallInfoFont);
-					DrawText(hdc, pData->messages.at(i).text.c_str(), pData->messages.at(i).text.length(), &textRect, DT_WORDBREAK | DT_EDITCONTROL);
+					DrawText(hdc, it->text.c_str(), it->text.length(), &textRect, DT_WORDBREAK | DT_EDITCONTROL);
 					
 					//Don't bother drawing anything else if the current message is at the top.
 					if (textY < 48) break;
@@ -2733,11 +2756,11 @@ LRESULT CALLBACK contentAreaProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 					textY -= 22;
 					SetTextColor(hdc, RGB(255, 255, 255)); //TODO: draw username with the right color
 					SelectObject(hdc, userNameFont);
-					username = getUserNameWithDiscriminator(pData->messages.at(i).authorID);
+					username = getUserNameWithDiscriminator(it->authorID);
 					ExtTextOut(hdc, textRect.left, textY, NULL, NULL, username.c_str(), username.length(), NULL);
 					
 					//Draw the avatar
-					userIcon = getUserAvatar(pData->messages.at(i).authorID);
+					userIcon = getUserAvatar(it->authorID);
 					if (userIcon) {
 						SelectObject(iconHDC, userIcon);
 						GetObject(userIcon, sizeof(bmp), &bmp);
@@ -2788,7 +2811,7 @@ LRESULT CALLBACK contentAreaProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 				RoundRectWidthHeight(hdc, 16, height - 48, width - (25 + 16), 44, 16, 16);
 				
 				//Update the scrollbar
-				pData->totalContentHeight = totalContentHeight;
+				/*pData->totalContentHeight = totalContentHeight;
 				SCROLLINFO si = {0};
 				GetScrollInfo(pData->hwndScrollbar, SB_CTL, &si);
 				si.cbSize = sizeof(SCROLLINFO);
@@ -2798,8 +2821,7 @@ LRESULT CALLBACK contentAreaProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 				si.nPage = height - 48;
 				//si.nPos = 10000;
 				//si.nTrackPos = 0;
-				SetScrollInfo(pData->hwndScrollbar, SB_CTL, &si, true);
-				
+				SetScrollInfo(pData->hwndScrollbar, SB_CTL, &si, true);*/
 				DeleteObject(maskedIconBmp);
 				DeleteObject(roundMaskBmp);
 				DeleteDC(maskedIconDC);
@@ -2842,7 +2864,13 @@ LRESULT CALLBACK contentAreaProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 				GetClientRect(wnd, &r);
 				int w = r.right - r.left;
 				int h = r.bottom - r.top;
-				MoveWindow(pData->hwndScrollbar, r.right - 15, 0, 15, h, TRUE);
+				messageWidth = w - 146;
+				//Only recalculate the total message height if the width changed
+				if (w != pData->oldContentAreaWidth) {
+					recalculateTotalMessageHeight(false);
+					pData->oldContentAreaWidth = w;
+				}
+				MoveWindow(pData->hwndScrollbar, r.right - 15, 48, 15, h - 48, TRUE);
 				
 				//Move the message field
 				MoveWindow(messageField, 72, h - 36, w - (72 + 15 + 15 /* the extra 15 is needed because we didn't subtract 15 from the width like we did when the field was created */), 20, TRUE);
@@ -2850,16 +2878,20 @@ LRESULT CALLBACK contentAreaProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 				SCROLLINFO si = {0};
 				GetScrollInfo(pData->hwndScrollbar, SB_CTL, &si);
 				si.cbSize = sizeof(SCROLLINFO);
-				si.fMask = SIF_RANGE | SIF_PAGE;
+				si.fMask = SIF_RANGE | SIF_PAGE | SIF_POS;
 				si.nMin = 0;
-				si.nMax = pData->totalContentHeight;
+				//MessageBox(NULL, wstring(L"WM_SIZE, si.nMax=" + to_wstring((long long)si.nMax)).c_str(), L"", MB_OK);
 				si.nPage = h - (48 + 48); //48px for the header and 48px for the message field
-				//si.nPos = 10000;
-				si.nTrackPos = 0;
+				si.nMax = pData->totalContentHeight;
+				si.nPos = (pData->shouldScrollToBottom ? (si.nMax - si.nPage) - 1 : si.nPos);
+				//si.nTrackPos = (pData->shouldScrollToBottom ? si.nMax : 0) - 1;
+				pData->scrollPos = si.nPos;//(pData->shouldScrollToBottom ? si.nMax : 0) - 1;
 				SetScrollInfo(pData->hwndScrollbar, SB_CTL, &si, true);
+				//MessageBox(NULL, wstring(L"si.nPos=" + to_wstring((long long)si.nPos)).c_str(), L"", MB_OK);
 			}
 		break;
 		case WM_VSCROLL:
+			//TODO: scroll smoothly when dragging the scroll box
 			//Copied from "Rita Han - MSFT" on StackOverflow
 			//https://stackoverflow.com/a/62038422
 			{
@@ -2875,12 +2907,12 @@ LRESULT CALLBACK contentAreaProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 				{
 					// User clicked the top arrow.
 				case SB_LINEUP:
-					si.nPos -= 75;//1;
+					si.nPos -= 40;//1;
 					break;
 
 					// User clicked the bottom arrow.
 				case SB_LINEDOWN:
-					si.nPos += 75;//1;
+					si.nPos += 40;//1;
 					break;
 
 					// User clicked the scroll bar shaft above the scroll box.
@@ -2895,7 +2927,7 @@ LRESULT CALLBACK contentAreaProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 
 					// User dragged the scroll box.
 				case SB_THUMBTRACK:
-					si.nPos = si.nTrackPos;
+					si.nPos = (si.nTrackPos > ((si.nTrackPos / 10) * 10) ? si.nMax : ((si.nTrackPos / 10) * 10));
 					break;
 
 				default:
@@ -2916,7 +2948,7 @@ LRESULT CALLBACK contentAreaProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 					r.right -= 15;
 					r.top += 48; //Don't scroll the header
 					r.bottom -= 48; //Don't scroll the message field
-					ScrollWindow(wnd, 0, 75 * (yPos - si.nPos), &r, &r);
+					ScrollWindow(wnd, 0, 40 * (yPos - si.nPos), &r, &r);
 					InvalidateRect(wnd, &r, FALSE); //TODO: Optimize this so items that were scrolled and are still visible aren't redrawn.
 					//UpdateWindow(wnd);
 					pData->scrollPos = si.nPos;
@@ -2954,15 +2986,16 @@ LRESULT CALLBACK contentAreaProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 	return DefWindowProcW(wnd, msg, wParam, lParam);
 }
 
-unsigned int getMessageHeight(HDC hdc, unsigned int width, wstring message) {
+unsigned int getMessageHeight(unsigned int width, wstring message) {
 	RECT textRect;
 	textRect.left = 0;
 	textRect.top = 0;
 	textRect.right = width;
-	DrawText(hdc, message.c_str(), message.length(), &textRect, DT_WORDBREAK | DT_EDITCONTROL | DT_CALCRECT);
+	DrawText(tempHDC, message.c_str(), message.length(), &textRect, DT_WORDBREAK | DT_EDITCONTROL | DT_CALCRECT);
 	
 	unsigned int height = textRect.bottom - textRect.top;
 	if (height < 40) height = 40;
+	height += MESSAGE_SPACING;
 	return height;
 }
 
@@ -3239,14 +3272,57 @@ HBITMAP getUserAvatar(uint64_t id) {
 
 void submitMessage() {
 	WCHAR buffer[DISCORD_MAX_CHARACTERS];
-	GetWindowText(messageField, buffer, DISCORD_MAX_CHARACTERS);
+	if (!GetWindowText(messageField, buffer, DISCORD_MAX_CHARACTERS)) {
+		//MessageBox(NULL, to_wstring((long long)globalContentAreaData->scrollPos).c_str(), L"", MB_OK);
+		return;
+	}
 	
 	Message m;
 	m.authorID = 580427633351720961;
 	m.id = 0;
 	m.text = wstring(buffer);
 	globalContentAreaData->messages.insert(globalContentAreaData->messages.begin(), m);
-	InvalidateRect(hwndContentArea, NULL, true);
+	recalculateTotalMessageHeight(true);
+	//RedrawWindow(hwndContentArea, NULL, NULL, NULL);
+	//InvalidateRect(hwndContentArea, NULL, true);
 	
 	SetWindowText(messageField, L"");
+}
+
+void recalculateTotalMessageHeight(bool addLastMessageHeight) {
+	unsigned long long totalContentHeight = 0;
+	unsigned int topMessageHeight, bottomMessageHeight;
+	unsigned int idx = 0;
+	for (auto i = globalContentAreaData->messages.begin(); i != globalContentAreaData->messages.end(); i++) {
+		topMessageHeight = getMessageHeight(messageWidth, i->text);
+		if (idx == 0) bottomMessageHeight = topMessageHeight;
+		i->messageHeight = topMessageHeight;
+		//MessageBox(NULL, to_wstring((long long)topMessageHeight).c_str(), L"", MB_OK);
+		totalContentHeight += topMessageHeight;
+		idx++;
+	}
+	totalContentHeight += (topMessageHeight*3); //TODO: fix the issue where the content area is partially filled, new messages are added, and it becomes impossible to scroll to the top one
+	globalContentAreaData->totalContentHeight = totalContentHeight;// + (topMessageHeight*3);
+
+	//Update the scrollbar
+	SCROLLINFO si = {0};
+	GetScrollInfo(globalContentAreaData->hwndScrollbar, SB_CTL, &si);
+	si.cbSize = sizeof(SCROLLINFO);
+	si.fMask = SIF_RANGE | (addLastMessageHeight ? SIF_POS : 0);
+	si.nMax = totalContentHeight;
+	if (addLastMessageHeight) {
+		si.nPos += topMessageHeight;
+		globalContentAreaData->scrollPos += topMessageHeight;
+	}
+	SetScrollInfo(globalContentAreaData->hwndScrollbar, SB_CTL, &si, true);
+	//MessageBox(NULL, L"Done resizing scrollbar", L"", MB_OK);
+	if (addLastMessageHeight) {
+		RECT r;
+		GetClientRect(hwndContentArea, &r);
+		r.top += 48;
+		r.bottom -= 48;
+		r.right -= 15;
+		ScrollWindow(hwndContentArea, 0, -topMessageHeight, &r, &r);
+	}
+	InvalidateRect(hwndContentArea, NULL, FALSE);
 }
