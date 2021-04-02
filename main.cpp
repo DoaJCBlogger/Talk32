@@ -49,6 +49,8 @@ using namespace rapidjson;
 #define CURL_STATICLIB
 #include "curl\builds\libcurl-vc-x86-release-static-ssl-static-zlib-static-ipv6-sspi\include\curl\curl.h"
 
+#include "emoji.h"
+
 LRESULT CALLBACK leftSidebarProc(HWND, UINT, WPARAM, LPARAM);
 LRESULT CALLBACK serverListProc(HWND, UINT, WPARAM, LPARAM);
 LRESULT CALLBACK contentAreaProc(HWND, UINT, WPARAM, LPARAM);
@@ -65,6 +67,10 @@ wstring getUserNameWithDiscriminator(uint64_t id);
 HBITMAP getUserAvatar(uint64_t id);
 void submitMessage();
 void recalculateTotalMessageHeight(bool);
+unsigned int DrawTextWithColorEmojis(HDC, unsigned int, unsigned int, unsigned int, bool, unsigned int, unsigned char*, unsigned int);
+int UTF8ToCodepoint(unsigned char*, unsigned int*, unsigned int);
+int UTF8CodepointIsEmoji(int);
+void drawEmoji(HDC, unsigned char*, int, unsigned int, unsigned int, unsigned int, unsigned int*, unsigned int);
 
 //Contains a font fix provided by "Christopher Janzon" on stackoverflow.com
 //https://stackoverflow.com/a/17075471
@@ -116,7 +122,7 @@ unsigned long long selectedServer = -1;
 unsigned long long selectedChannel = -1;
 unsigned int selectedChannelGroupIdx = 0;
 unsigned int selectedChannelIdxWithinGroup = 0;
-wstring selectedServerName = L"";
+string selectedServerName = "";
 wstring selectedChannelName = L"";
 
 struct ConfigObj {
@@ -211,7 +217,7 @@ struct HoverBtnData {
 };
 
 struct ServerListItem {
-	wstring name;
+	string name;
 	uint64_t id;
 	bool unread;
 	HBITMAP hbmIcon;
@@ -593,6 +599,15 @@ static size_t cb(void *data, size_t size, size_t nmemb, void *userp)
 }
 
 int WINAPI WinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
+	memset(emojiIsLoaded, 0, (EMOJI_COUNT / 8) + ((EMOJI_COUNT % 8) != 0 ? 1 : 0));
+	unsigned char str[] = {0xf0,0x9f,0x97,0xbd};//"👷⌚️";
+	//unsigned int DrawTextWithColorEmojis(HDC, unsigned int, unsigned int, unsigned int, bool, unsigned int, unsigned char*, unsigned int);
+	//unsigned long UTF8ToCodepoint(char*, unsigned int*, unsigned int);
+	unsigned int tmp;
+	//MessageBox(NULL, to_wstring((long long)UTF8ToCodepoint((unsigned char*)str,&tmp,4)).c_str(), L"", MB_OK);
+	//MessageBox(NULL, to_wstring((long long)UTF8ToCodepoint((unsigned char*)str,&tmp,4)).c_str(), L"", MB_OK);
+	//MessageBox(NULL, to_wstring((long long)checkThis).c_str(), L"", MB_OK);
+	MessageBox(NULL, to_wstring((long long)UTF8CodepointIsEmoji(0x1f9b8)).c_str(), L"", MB_OK);
 	/*CURL *curl = curl_easy_init();
 	struct curl_slist *slist=NULL;
 	if (curl) {
@@ -1088,7 +1103,7 @@ bool login(bool clearAuthPage, bool offlineMode) {
 
 				//Get the title
 				if (!(server.HasMember("title") && server["title"].IsString())) continue;
-				sli.name = utf8_to_wstring(server["title"].GetString());
+				sli.name = /*utf8_to_wstring(*/server["title"].GetString()/*)*/;
 
 				//Get the id
 				if (!(server.HasMember("id") && server["id"].IsUint64())) continue;
@@ -1433,7 +1448,8 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 					textRect.top = 19;
 					textRect.right = 18 + 182;
 					//ExtTextOut(hdc, 18, 19, NULL, NULL, selectedServerName.c_str(), selectedServerName/*str*/.length(), NULL);
-					DrawText(hdc, selectedServerName.c_str(), selectedServerName.length(), &textRect, DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+					//DrawText(hdc, selectedServerName.c_str(), selectedServerName.length(), &textRect, DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+					DrawTextWithColorEmojis(hdc, textRect.left, textRect.top, (textRect.right - textRect.left), false, (textRect.bottom - textRect.top), (unsigned char*)selectedServerName.c_str(), selectedServerName.length());
 					
 					//Draw the line under the server name
 					SetDCPenColor(hdc, RGB(37,37,39));
@@ -3325,4 +3341,197 @@ void recalculateTotalMessageHeight(bool addLastMessageHeight) {
 		ScrollWindow(hwndContentArea, 0, -topMessageHeight, &r, &r);
 	}
 	InvalidateRect(hwndContentArea, NULL, FALSE);
+}
+
+unsigned int DrawTextWithColorEmojis(HDC hdc, unsigned int x, unsigned int y, unsigned int width, bool multiline, unsigned int maxHeight, unsigned char *string, unsigned int bytes) {
+	//wstring_convert<codecvt_utf8<wchar_t>> cv;
+	wstring tmp;
+	unsigned char *ptr = string;
+	//Work on words, and print emojis between them
+	//Pass-through anything that isn't a recognized emoji
+	//"string" is a UTF-8 byte array.
+	
+	//This will be simple if only 1 line is required.
+	if (!multiline) {
+		RECT r;
+		r.right = x + width;
+		r.top = y;
+		r.bottom = y + maxHeight;
+
+		//Find any emojis and get the width of the text before/between them
+		unsigned int i, textSectionStartIdx, textSectionEndIdx; //"i" is specified in UTF-8 codepoints and the other 2 are bytes
+		unsigned int charSizeInBytes, relativeX, relativeY;
+		int codepoint;
+		int isEmoji;
+		i = textSectionStartIdx = relativeX = relativeY = 0;
+		while (bytes > 0) {
+			codepoint = UTF8ToCodepoint(ptr, &charSizeInBytes, bytes);
+			//MessageBox(NULL, wstring(L"Successful codepoint=" + to_wstring((long long)codepoint)+L", char bytes=" + to_wstring((long long)charSizeInBytes) + L", remaining bytes=" + to_wstring((long long)bytes)).c_str(), L"", MB_OK);
+			if (codepoint < 0) {
+				codepoint = 63; //An ASCII question mark. This is not a recognized emoji so increase the length of the text section
+				tmp += ((wchar_t)codepoint);
+			} else {
+				//MessageBox(NULL, wstring(L"About to check isEmoji with codepoint " + to_wstring((long long)codepoint)).c_str(), L"", MB_OK);
+				isEmoji = UTF8CodepointIsEmoji(codepoint);
+				//MessageBox(NULL, wstring(L"codepoint=" + to_wstring((long long)codepoint) + L", isEmoji=" + to_wstring((long long)isEmoji)).c_str(), L"", MB_OK);
+				if (isEmoji >= 0) {
+					//Draw the preceding text, if any, and then the emoji
+					//textSectionEndIdx = i;
+					if (tmp.length() > 0/*(textSectionEndIdx - textSectionStartIdx) > 0*/) {
+						//Draw the text
+						r.left = x + relativeX;
+						//tmp = cv.from_bytes((const char*)(ptr + textSectionStartIdx), (const char*)(ptr + textSectionEndIdx + 1));
+						ExtTextOut(hdc, r.left, y, ETO_CLIPPED, &r, tmp.c_str(), tmp.length(), NULL);
+						//MessageBox(NULL, tmp.c_str(), L"", MB_OK);
+						tmp = L"";
+					}
+					//Draw the emoji
+					//drawEmoji(HDC hdc, unsigned char *ptr, int initialEmojiIdx, unsigned int x, unsigned int y, unsigned int size, unsigned int *charSizeInBytes, unsigned int maxBytes)
+					drawEmoji(hdc, ptr, isEmoji, x + relativeX, y, 18, &charSizeInBytes, bytes);
+					//ptr += charSizeInBytes;
+					relativeX += (18 + 4 + 4);
+				} else {
+					//The character was not a recognized emoji so increase the length of the text section
+					tmp += ((wchar_t)codepoint);
+					//textSectionEndIdx = i;
+				}
+			}
+			ptr += charSizeInBytes;
+			bytes -= charSizeInBytes;
+			i++;
+		}
+		
+		//Draw any remaining text
+		if (tmp.length() > 0 && relativeX < width/*(textSectionEndIdx - textSectionStartIdx) > 0*/) {
+			//Draw the text
+			r.left = x + relativeX;
+			//tmp = cv.from_bytes((const char*)(ptr + textSectionStartIdx), (const char*)(ptr + textSectionEndIdx + 1));
+			ExtTextOut(hdc, r.left, y, ETO_CLIPPED, &r, tmp.c_str(), tmp.length(), NULL);
+			//MessageBox(NULL, tmp.c_str(), L"", MB_OK);
+			tmp.clear();
+		}
+		
+		return 0;//height;
+	}
+	
+	//We need to go word by word
+	//Sentences will be broken at word boundaries when they are too long to fit on 1 line
+	//Words that are too long will start on a new line and be broken as needed
+	unsigned int remainingBytes = bytes;
+	unsigned int charLength;
+	unsigned int wordStartCodepoint, wordEndCodepoint;
+	wordStartCodepoint = wordEndCodepoint = 0;
+	for (unsigned int i = 0; i < bytes; i++) {
+		//
+		if (UTF8CodepointIsEmoji(UTF8ToCodepoint(ptr, &charLength, remainingBytes)) >= 0) {
+			//We need to stop drawing text and draw an emoji
+		} else {
+			//Add the non-emoji character to the string and draw it
+		}
+	}
+	
+	return 0;
+}
+
+int UTF8CodepointIsEmoji(int codepoint) {
+	//Use a binary search instead of a linear search since this has to run for every visible emoji every time the screen is painted.
+	//The worst case time complexity for a binary search is O(log n) which is much better than O(n) for a linear search
+	if (codepoint < MIN_EMOJI || codepoint > MAX_EMOJI) return -1;
+	unsigned int lowerBound, midpoint, upperBound;
+	lowerBound = 0;
+	upperBound = EMOJI_COUNT - 1;
+	const unsigned int *ptr;
+//int cycle=0;
+	while (true) {
+		midpoint = (lowerBound + upperBound) >> 1;
+		ptr	= emojiCodepoints[midpoint];
+		//if (codepoint == 32) MessageBox(NULL, wstring(L"UTF8CodepointIsEmoji() Attempt #"+to_wstring((long long)cycle)+L": lower="+to_wstring((long long)lowerBound)+L", mid="+to_wstring((long long)midpoint)+L", upper="+to_wstring((long long)upperBound)+L", target="+to_wstring((long long)codepoint)).c_str(), L"", MB_OK);
+		if ((lowerBound >= upperBound || lowerBound == midpoint) && (*ptr) != codepoint) break;
+		if ((*ptr) == codepoint) {
+			return midpoint;
+		} else if ((*ptr) > codepoint) {
+			upperBound = midpoint - 1;
+		} else if ((*ptr) < codepoint) {
+			lowerBound = midpoint + 1;
+		}//cycle++;
+	}
+
+	return -1;
+}
+
+int UTF8ToCodepoint(unsigned char* byteArray, unsigned int *charLength, unsigned int maxBytes) {
+	wstring debug = L"UTF8ToCodepoint operating on starting byte " + to_wstring((long long)*byteArray) + L" with " + to_wstring((long long)maxBytes) + L" bytes remaining";
+	//MessageBox(NULL, debug.c_str(), L"", MB_OK);
+	//Returns the codepoint, or -1 if there was an error.
+	//charLength will contain the number of bytes consumed.
+	unsigned char* ptr = byteArray;
+	*charLength = 0;
+	unsigned long retVal = 0;
+	if ((*byteArray) & 0x80) {
+		//This is a character greater than 127
+		//Get the number of bytes
+		if (((*byteArray) >> 3) == 0x1e) {
+			//4 bytes
+			if (maxBytes < 4) {*charLength = maxBytes; return -1;}
+			retVal = (*ptr++) & 0x7;
+			maxBytes--;
+			(*charLength)++;
+			if (((*ptr) >> 6) != 0x2) {*charLength = 1; return -1;}
+			retVal = (retVal << 6) | ((*ptr++) & 0x3f);
+			maxBytes--;
+			(*charLength)++;
+			if (((*ptr) >> 6) != 0x2) {*charLength = 2; return -1;}
+			retVal = (retVal << 6) | ((*ptr++) & 0x3f);
+			maxBytes--;
+			(*charLength)++;
+			if (((*ptr) >> 6) != 0x2) {*charLength = 3; return -1;}
+			retVal = (retVal << 6) | ((*ptr++) & 0x3f);
+			(*charLength)++;
+		} else if (((*byteArray) >> 4) == 0xe) {
+			//3 bytes
+			if (maxBytes < 3) {*charLength = maxBytes; return -1;}
+			retVal = (*ptr++) & 0xf;
+			maxBytes--;
+			(*charLength)++;
+			if (((*ptr) >> 6) != 0x2) {*charLength = 1; return -1;}
+			retVal = (retVal << 6) | ((*ptr++) & 0x3f);
+			maxBytes--;
+			(*charLength)++;
+			if (((*ptr) >> 6) != 0x2) {*charLength = 2; return -1;}
+			retVal = (retVal << 6) | ((*ptr++) & 0x3f);
+			(*charLength)++;
+		} else if (((*byteArray) >> 5) == 0x6) {
+			//2 bytes
+			if (maxBytes < 2) {*charLength = maxBytes; return -1;}
+			retVal = (*ptr++) & 0x1f;
+			maxBytes--;
+			if (((*ptr) >> 6) != 0x2) {*charLength = 1; return -1;}
+			retVal = (retVal << 6) | ((*ptr++) & 0x3f);
+		} else {
+			//Error
+			*charLength = 1;
+			return -1;
+		}
+	} else {
+		//This is a character between 0 and 127 inclusive
+		//MessageBox(NULL, L"Returning an ASCII byte", L"", MB_OK);
+		(*charLength) = 1;
+		//MessageBox(NULL, wstring(L"Returning ASCII byte " + to_wstring((long long)*byteArray)).c_str(), L"", MB_OK);
+		return (int)(*byteArray);
+	}
+	return retVal;
+}
+
+void drawEmoji(HDC hdc, unsigned char *ptr, int initialEmojiIdx, unsigned int x, unsigned int y, unsigned int size, unsigned int *charSizeInBytes, unsigned int maxBytes) {
+	UTF8ToCodepoint(ptr, charSizeInBytes, maxBytes);
+	bool emojiIsInMemory = emojiIsLoaded[initialEmojiIdx / 8] & (1 << (7 - (initialEmojiIdx % 8)));
+	if (!emojiIsInMemory) {
+		string filename = ".\\img\\emojis\\";
+		filename += emojiFilenames[initialEmojiIdx];
+		filename += ".png";
+		Gdiplus::Bitmap bmp(utf8_to_wstring(filename).c_str(), false);
+		bmp.GetHBITMAP(RGB(54,57,63), &emojiBitmaps[initialEmojiIdx]);
+	}
+	SelectObject(tempHDC, emojiBitmaps[initialEmojiIdx]);
+	StretchBlt(hdc, x, y, size, size, tempHDC, 0, 0, 72, 72, SRCCOPY);
 }
