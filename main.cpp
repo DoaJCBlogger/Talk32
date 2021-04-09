@@ -67,10 +67,11 @@ wstring getUserNameWithDiscriminator(uint64_t id);
 HBITMAP getUserAvatar(uint64_t id);
 void submitMessage();
 void recalculateTotalMessageHeight(bool);
-unsigned int DrawTextWithColorEmojis(HDC, unsigned int, unsigned int, unsigned int, bool, unsigned int, unsigned char*, unsigned int);
+unsigned int DrawTextWithColorEmojis(HDC, unsigned int, unsigned int, unsigned int, bool, unsigned char*, unsigned int, bool, SIZE*);
 int UTF8ToCodepoint(unsigned char*, unsigned int*, unsigned int);
 int UTF8CodepointIsEmoji(int);
-void drawEmoji(HDC, unsigned char*, int, unsigned int, unsigned int, unsigned int, unsigned int*, unsigned int);
+void drawEmoji(HDC, unsigned char*, int, unsigned int, unsigned int, unsigned int);
+int ReadEmoji(unsigned char*, unsigned int*, unsigned int);
 
 //Contains a font fix provided by "Christopher Janzon" on stackoverflow.com
 //https://stackoverflow.com/a/17075471
@@ -123,7 +124,7 @@ unsigned long long selectedChannel = -1;
 unsigned int selectedChannelGroupIdx = 0;
 unsigned int selectedChannelIdxWithinGroup = 0;
 string selectedServerName = "";
-wstring selectedChannelName = L"";
+string selectedChannelName = "";
 
 struct ConfigObj {
 	wstring authToken;
@@ -233,7 +234,7 @@ struct ServerListData {
 };
 
 struct ChannelItem {
-	wstring name;
+	string name;
 	unsigned long long id;
 	bool voiceChannel;
 	bool locked;
@@ -243,7 +244,7 @@ struct ChannelItem {
 };
 
 struct ChannelGroup {
-	wstring name;
+	string name;
 	vector<ChannelItem> channels;
 	unsigned long long id;
 	bool IsCategory;
@@ -286,7 +287,7 @@ struct Message {
 	unsigned long long id;
 	unsigned long long authorID;
 	int messageHeight;
-	wstring text;
+	string text;
 };
 
 struct ContentAreaData {
@@ -600,14 +601,6 @@ static size_t cb(void *data, size_t size, size_t nmemb, void *userp)
 
 int WINAPI WinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
 	memset(emojiIsLoaded, 0, (EMOJI_COUNT / 8) + ((EMOJI_COUNT % 8) != 0 ? 1 : 0));
-	unsigned char str[] = {0xf0,0x9f,0x97,0xbd};//"👷⌚️";
-	//unsigned int DrawTextWithColorEmojis(HDC, unsigned int, unsigned int, unsigned int, bool, unsigned int, unsigned char*, unsigned int);
-	//unsigned long UTF8ToCodepoint(char*, unsigned int*, unsigned int);
-	unsigned int tmp;
-	//MessageBox(NULL, to_wstring((long long)UTF8ToCodepoint((unsigned char*)str,&tmp,4)).c_str(), L"", MB_OK);
-	//MessageBox(NULL, to_wstring((long long)UTF8ToCodepoint((unsigned char*)str,&tmp,4)).c_str(), L"", MB_OK);
-	//MessageBox(NULL, to_wstring((long long)checkThis).c_str(), L"", MB_OK);
-	MessageBox(NULL, to_wstring((long long)UTF8CodepointIsEmoji(0x1f9b8)).c_str(), L"", MB_OK);
 	/*CURL *curl = curl_easy_init();
 	struct curl_slist *slist=NULL;
 	if (curl) {
@@ -1222,8 +1215,8 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 
 				ChannelGroup cg;
 				ChannelItem c;
-				cg.name = L"CHAT...";
-				c.name = L"swarm only";
+				cg.name = "CHAT...";
+				c.name = "swarm only";
 				c.unread = false;
 				c.locked = true;
 				c.voiceChannel = true;
@@ -1232,35 +1225,35 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 				cg.collapseUnread = false;
 				cg.channels.push_back(c);
 
-				c.name = L"soldiers only";
+				c.name = "soldiers only";
 				c.unread = false;
 				c.hideVoiceChannelMembers = false;
 				cg.channels.push_back(c);
 				
-				c.name = L"colony only";
+				c.name = "colony only";
 				c.unread = false;
 				cg.channels.push_back(c);
 				
-				c.name = L"all roles";
+				c.name = "all roles";
 				c.unread = false;
 				cg.channels.push_back(c);
 
-				c.name = L"General";
+				c.name = "General";
 				c.unread = false;
 				c.locked = false;
 				cg.channels.push_back(c);
 				
-				c.name = L"Coding";
+				c.name = "Coding";
 				c.unread = false;
 				c.locked = false;
 				cg.channels.push_back(c);
 				
-				c.name = L"Gaming";
+				c.name = "Gaming";
 				c.unread = false;
 				c.locked = false;
 				cg.channels.push_back(c);
 				
-				c.name = L"afk";
+				c.name = "afk";
 				c.unread = false;
 				c.locked = false;
 				c.id = 693179154467782736;
@@ -1271,8 +1264,8 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 
 				cg.channels.clear();
 
-				cg.name = L"MISC...";
-				c.name = L"lobby";
+				cg.name = "MISC...";
+				c.name = "lobby";
 				c.unread = true;
 				c.locked = false;
 				c.voiceChannel = false;
@@ -1280,46 +1273,46 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 				cg.id = 587110876210003978;
 				cg.channels.push_back(c);
 
-				c.name = L"introduce-yourself";
+				c.name = "introduce-yourself";
 				c.unread = false;
 				c.id = 580514338897395742;
 				cg.channels.push_back(c);
 
-				c.name = L"swarm-only";
+				c.name = "swarm-only";
 				c.unread = false;
 				c.locked = true;
 				cg.channels.push_back(c);
 
-				c.name = L"soldier-only";
+				c.name = "soldier-only";
 				c.unread = false;
 				cg.channels.push_back(c);
 
-				c.name = L"colony-only";
+				c.name = "colony-only";
 				c.unread = false;
 				cg.channels.push_back(c);
 
-				c.name = L"general";
+				c.name = "general";
 				c.unread = false;
 				c.locked = false;
 				cg.channels.push_back(c);
 
-				c.name = L"videos";
+				c.name = "videos";
 				c.unread = false;
 				cg.channels.push_back(c);
 
-				c.name = L"pics";
+				c.name = "pics";
 				c.unread = false;
 				cg.channels.push_back(c);
 
-				c.name = L"voip";
+				c.name = "voip";
 				c.unread = false;
 				cg.channels.push_back(c);
 				pData->dataModel.push_back(cg);
 				
 				cg.channels.clear();
 
-				cg.name = L"HACKERSPACE";
-				c.name = L"hackerspace";
+				cg.name = "HACKERSPACE";
+				c.name = "hackerspace";
 				c.unread = true;
 				c.locked = false;
 				c.voiceChannel = false;
@@ -1327,7 +1320,7 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 				cg.id = 713492198447906908;
 				cg.channels.push_back(c);
 
-				c.name = L"hackerspace";
+				c.name = "hackerspace";
 				c.unread = false;
 				c.voiceChannel = true;
 				cg.channels.push_back(c);
@@ -1336,52 +1329,52 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 				
 				cg.channels.clear();
 				
-				cg.name = L"AREAS OF INTEREST...";
-				c.name = L"hardware";
+				cg.name = "AREAS OF INTEREST...";
+				c.name = "hardware";
 				c.unread = false;
 				c.locked = false;
 				c.voiceChannel = false;
 				cg.channels.push_back(c);
 				
-				c.name = L"software";
+				c.name = "software";
 				cg.channels.push_back(c);
-				c.name = L"programming";
+				c.name = "programming";
 				cg.channels.push_back(c);
-				c.name = L"operating-systems";
+				c.name = "operating-systems";
 				cg.channels.push_back(c);
-				c.name = L"networking";
+				c.name = "networking";
 				cg.channels.push_back(c);
-				c.name = L"web";
+				c.name = "web";
 				cg.channels.push_back(c);
-				c.name = L"security";
+				c.name = "security";
 				cg.channels.push_back(c);
-				c.name = L"blockchain";
+				c.name = "blockchain";
 				cg.channels.push_back(c);
-				c.name = L"electronics";
+				c.name = "electronics";
 				cg.channels.push_back(c);
-				c.name = L"micro-controllers";
+				c.name = "micro-controllers";
 				cg.channels.push_back(c);
-				c.name = L"control-systems";
+				c.name = "control-systems";
 				cg.channels.push_back(c);
-				c.name = L"engineering";
+				c.name = "engineering";
 				cg.channels.push_back(c);
-				c.name = L"robotics";
+				c.name = "robotics";
 				cg.channels.push_back(c);
-				c.name = L"radio";
+				c.name = "radio";
 				cg.channels.push_back(c);
-				c.name = L"remote-control";
+				c.name = "remote-control";
 				cg.channels.push_back(c);
-				c.name = L"cnc";
+				c.name = "cnc";
 				cg.channels.push_back(c);
-				c.name = L"laser-cutting";
+				c.name = "laser-cutting";
 				cg.channels.push_back(c);
-				c.name = L"3d-printing";
+				c.name = "3d-printing";
 				cg.channels.push_back(c);
-				c.name = L"space";
+				c.name = "space";
 				cg.channels.push_back(c);
-				c.name = L"art-and-design";
+				c.name = "art-and-design";
 				cg.channels.push_back(c);
-				c.name = L"food-and-drink";
+				c.name = "food-and-drink";
 				cg.channels.push_back(c);
 				pData->dataModel.push_back(cg);
 			}
@@ -1396,7 +1389,7 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 			r.top += 50;
 			//r.bottom -= 25;
 			r.right -= 15;
-			pData->hwndScrollbar = CreateWindowExW(NULL, L"SCROLLBAR",L"", WS_CHILD | SBS_VERT | WS_VISIBLE, r.right, 0, 15, height, wnd, (HMENU)NULL, (HINSTANCE)GetWindowLong(wnd, GWL_HINSTANCE), NULL);
+			pData->hwndScrollbar = CreateWindowExW(NULL, L"SCROLLBAR",L"", WS_CHILD | SBS_VERT | WS_VISIBLE, r.right, 50, 15, height, wnd, (HMENU)NULL, (HINSTANCE)GetWindowLong(wnd, GWL_HINSTANCE), NULL);
 			int w = r.right - r.left;
 			MoveWindow(pData->hwndScrollbar, r.right - 15, 0, 15, height, TRUE);
 
@@ -1433,7 +1426,7 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 				int h = r.bottom - r.top;
 				//FillRect(hdc, &r, serverListColorBrush);
 
-				MoveWindow(pData->hwndScrollbar, r.right - 15, 0, 15, h, TRUE);
+				MoveWindow(pData->hwndScrollbar, r.right - 15, 50, 15, h, TRUE);
 
 				//Redraw the entire list
 				{
@@ -1446,10 +1439,10 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 					RECT textRect;
 					textRect.left = 18;
 					textRect.top = 19;
-					textRect.right = 18 + 182;
+					textRect.right = 18 + 182 + 15;
 					//ExtTextOut(hdc, 18, 19, NULL, NULL, selectedServerName.c_str(), selectedServerName/*str*/.length(), NULL);
 					//DrawText(hdc, selectedServerName.c_str(), selectedServerName.length(), &textRect, DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
-					DrawTextWithColorEmojis(hdc, textRect.left, textRect.top, (textRect.right - textRect.left), false, (textRect.bottom - textRect.top), (unsigned char*)selectedServerName.c_str(), selectedServerName.length());
+					DrawTextWithColorEmojis(hdc, textRect.left, textRect.top, (textRect.right - textRect.left), false, (unsigned char*)selectedServerName.c_str(), selectedServerName.length(), false, NULL);
 					
 					//Draw the line under the server name
 					SetDCPenColor(hdc, RGB(37,37,39));
@@ -1461,14 +1454,14 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 
 					//Draw the down arrow beside the server name
 					SetDCPenColor(hdc, RGB(213,214,215));
-					MoveToEx(hdc, 212, 23, NULL);
-					LineTo(hdc, 217, 28);
-					MoveToEx(hdc, 211, 23, NULL);
-					LineTo(hdc, 216, 28);
-					MoveToEx(hdc, 216, 28, NULL);
-					LineTo(hdc, 222, 22);
-					MoveToEx(hdc, 217, 28, NULL);
-					LineTo(hdc, 223, 22);
+					MoveToEx(hdc, 227, 23, NULL);
+					LineTo(hdc, 232, 28);
+					MoveToEx(hdc, 226, 23, NULL);
+					LineTo(hdc, 231, 28);
+					MoveToEx(hdc, 231, 28, NULL);
+					LineTo(hdc, 237, 22);
+					MoveToEx(hdc, 232, 28, NULL);
+					LineTo(hdc, 238, 22);
 
 					//Draw the channels
 					unsigned int channelGroupCount = pData->dataModel.size();
@@ -1513,7 +1506,8 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 							SetBkColor(hdc, sidebarColor);
 							Rectangle(hdc, 0, (idx * 32) + 50, 232, (idx * 32) + 50 + 32 + 32);
 							
-							ExtTextOut(hdc, 12, (idx * 32) + 50 + 7 + 8, NULL, NULL, pData->dataModel.at(i).name.c_str(), pData->dataModel.at(i).name.length(), NULL);
+							//ExtTextOut(hdc, 12, (idx * 32) + 50 + 7 + 8, NULL, NULL, pData->dataModel.at(i).name.c_str(), pData->dataModel.at(i).name.length(), NULL);
+							DrawTextWithColorEmojis(hdc, 12, (idx * 32) + 50 + 7 + 8, 223, false, (unsigned char*)pData->dataModel.at(i).name.c_str(), pData->dataModel.at(i).name.length(), false, NULL);
 							
 							//Draw the sideways or down-facing arrow beside the channel group
 							if (pData->dataModel.at(i).IsExpanded) {
@@ -1576,7 +1570,8 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 								RoundRectWidthHeight(hdc, 15, (idx * 32) + 50, 217, 32, 8, 8);
 							}
 							
-							ExtTextOut(hdc, 42, (idx * 32) + 50 + 7, NULL, NULL, pData->dataModel.at(i).channels.at(j).name.c_str(), pData->dataModel.at(i).channels.at(j).name.length(), NULL);
+							//ExtTextOut(hdc, 42, (idx * 32) + 50 + 7, NULL, NULL, pData->dataModel.at(i).channels.at(j).name.c_str(), pData->dataModel.at(i).channels.at(j).name.length(), NULL);
+							DrawTextWithColorEmojis(hdc, 42, (idx * 32) + 50 + 7, 178, false, (unsigned char*)pData->dataModel.at(i).channels.at(j).name.c_str(), pData->dataModel.at(i).channels.at(j).name.length(), false, NULL);
 
 							//Draw the channel icon
 							/*hBmpChannelPoundSign;
@@ -1920,7 +1915,7 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 				GetClientRect(wnd, &r);
 				int w = r.right - r.left;
 				int h = r.bottom - r.top;
-				MoveWindow(pData->hwndScrollbar, r.right - 15, 0, 15, h, TRUE);
+				MoveWindow(pData->hwndScrollbar, r.right - 15, 50, 15, h, TRUE);
 
 				unsigned int totalItems = 0;
 				for (unsigned int i = 0; i < pData->dataModel.size(); i++) {
@@ -2585,49 +2580,54 @@ LRESULT CALLBACK contentAreaProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 				Message m;
 				m.messageHeight = -1;
 				
+				m.authorID = 115110682399080453;
+				m.id = 826573208504369182;
+				m.text = "hiii 👋";
+				pData->messages.push_back(m);
+				
 				m.authorID = 580427633351720961;
 				m.id = 776250970556334090;
-				m.text = L"D:";
+				m.text = "D:";
 				pData->messages.push_back(m);
 				
 				m.authorID = 226733221499371521;
 				m.id = 776250656700891167;
-				m.text = L"Schmitty more like Snitchtty";
+				m.text = "Schmitty more like Snitchtty";
 				pData->messages.push_back(m);
 				
 				m.authorID = 226733221499371521;
 				m.id = 776250578384060457;
-				m.text = L"Why did you rat out traka";
+				m.text = "Why did you rat out traka";
 				pData->messages.push_back(m);
 				
 				m.authorID = 196483655453900801;
 				m.id = 776242881698070588;
-				m.text = L"do you think the authorities got traka? he really was spilling secrets, and i did put in an FBI tip...";
+				m.text = "do you think the authorities got traka? he really was spilling secrets, and i did put in an FBI tip...";
 				pData->messages.push_back(m);
 				
 				m.authorID = 545703069783031828;
 				m.id = 776234616586502175;
-				m.text = L"[image]";
+				m.text = "[image]";
 				pData->messages.push_back(m);
 				
 				m.authorID = 115110682399080453;
 				m.id = 776226754125234227;
-				m.text = L"Went to the future.or somrttjkng";
+				m.text = "Went to the future.or somrttjkng";
 				pData->messages.push_back(m);
 				
 				m.authorID = 115110682399080453;
 				m.id = 776226712107220992;
-				m.text = L"Teskaplex probably lile";
+				m.text = "Teskaplex probably lile";
 				pData->messages.push_back(m);
 				
 				m.authorID = 580427633351720961;
 				m.id = 776224643500605441;
-				m.text = L"Sarah died in vain";
+				m.text = "Sarah died in vain";
 				pData->messages.push_back(m);
 				
 				m.authorID = 580427633351720961;
 				m.id = 776224643500605441;
-				m.text = L"Trakaplex died for our sins";
+				m.text = "Trakaplex died for our sins";
 				pData->messages.push_back(m);
 			}
 			
@@ -2676,6 +2676,7 @@ LRESULT CALLBACK contentAreaProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 			originalGDIObj = SelectObject(hdc, GetStockObject(DC_PEN));
 			{
 				RECT r, textRect;
+				SIZE textSize;
 				GetClientRect(wnd, &r);
 				int width = r.right - r.left;
 				int height = r.bottom - r.top;
@@ -2763,7 +2764,8 @@ LRESULT CALLBACK contentAreaProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 					//Draw the text
 					SetTextColor(hdc, messageTextColor);
 					SelectObject(hdc, smallInfoFont);
-					DrawText(hdc, it->text.c_str(), it->text.length(), &textRect, DT_WORDBREAK | DT_EDITCONTROL);
+					//DrawText(hdc, it->text.c_str(), it->text.length(), &textRect, DT_WORDBREAK | DT_EDITCONTROL);
+					DrawTextWithColorEmojis(hdc, textRect.left, textRect.top, (textRect.right - textRect.left), true, (unsigned char*)it->text.c_str(), it->text.length(), false, NULL);
 					
 					//Don't bother drawing anything else if the current message is at the top.
 					if (textY < 48) break;
@@ -2803,9 +2805,11 @@ LRESULT CALLBACK contentAreaProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 				textRect.top = 15;
 				textRect.bottom = 35;
 				textRect.right = (width - 15) - 225;
-				DrawText(hdc, selectedChannelName.c_str(), selectedChannelName.length(), &textRect, DT_SINGLELINE | DT_WORDBREAK | DT_NOPREFIX | DT_END_ELLIPSIS | DT_CALCRECT);
-				channelHeaderX += (textRect.right - textRect.left) + 16;
-				DrawText(hdc, selectedChannelName.c_str(), selectedChannelName.length(), &textRect, DT_SINGLELINE | DT_WORDBREAK | DT_NOPREFIX | DT_END_ELLIPSIS);
+				//DrawText(hdc, selectedChannelName.c_str(), selectedChannelName.length(), &textRect, DT_SINGLELINE | DT_WORDBREAK | DT_NOPREFIX | DT_END_ELLIPSIS | DT_CALCRECT);
+				DrawTextWithColorEmojis(hdc, textRect.left, textRect.top, (textRect.right - textRect.left), false, (unsigned char*)selectedChannelName.c_str(), selectedChannelName.length(), true, &textSize);
+				channelHeaderX += textSize.cx/*(textRect.right - textRect.left)*/ + 16;
+				//DrawText(hdc, selectedChannelName.c_str(), selectedChannelName.length(), &textRect, DT_SINGLELINE | DT_WORDBREAK | DT_NOPREFIX | DT_END_ELLIPSIS);
+				DrawTextWithColorEmojis(hdc, textRect.left, textRect.top, (textRect.right - textRect.left), false, (unsigned char*)selectedChannelName.c_str(), selectedChannelName.length(), false, NULL);
 				//Draw the 24-pixel vertical gray line after the channel name
 				SetDCPenColor(hdc, RGB(66,69,74));
 				MoveToEx(hdc, channelHeaderX, 12, NULL);
@@ -3296,7 +3300,7 @@ void submitMessage() {
 	Message m;
 	m.authorID = 580427633351720961;
 	m.id = 0;
-	m.text = wstring(buffer);
+	m.text = wstring_to_utf8(wstring(buffer));
 	globalContentAreaData->messages.insert(globalContentAreaData->messages.begin(), m);
 	recalculateTotalMessageHeight(true);
 	//RedrawWindow(hwndContentArea, NULL, NULL, NULL);
@@ -3310,7 +3314,7 @@ void recalculateTotalMessageHeight(bool addLastMessageHeight) {
 	unsigned int topMessageHeight, bottomMessageHeight;
 	unsigned int idx = 0;
 	for (auto i = globalContentAreaData->messages.begin(); i != globalContentAreaData->messages.end(); i++) {
-		topMessageHeight = getMessageHeight(messageWidth, i->text);
+		topMessageHeight = getMessageHeight(messageWidth, utf8_to_wstring(i->text.c_str()));
 		if (idx == 0) bottomMessageHeight = topMessageHeight;
 		i->messageHeight = topMessageHeight;
 		//MessageBox(NULL, to_wstring((long long)topMessageHeight).c_str(), L"", MB_OK);
@@ -3343,28 +3347,32 @@ void recalculateTotalMessageHeight(bool addLastMessageHeight) {
 	InvalidateRect(hwndContentArea, NULL, FALSE);
 }
 
-unsigned int DrawTextWithColorEmojis(HDC hdc, unsigned int x, unsigned int y, unsigned int width, bool multiline, unsigned int maxHeight, unsigned char *string, unsigned int bytes) {
+unsigned int DrawTextWithColorEmojis(HDC hdc, unsigned int x, unsigned int y, unsigned int width, bool multiline, unsigned char *string, unsigned int bytes, bool calculateOnly, SIZE *textSize) {
 	//wstring_convert<codecvt_utf8<wchar_t>> cv;
 	wstring tmp;
 	unsigned char *ptr = string;
-	//Work on words, and print emojis between them
+	SIZE s;
+	int isEmoji;
+	bool shouldAdd4PxSpacing = false;
+	GetTextExtentPoint32(hdc, L"A", 1, &s);
+	unsigned int lineHeight = s.cy;
+	unsigned int charSizeInBytes;
 	//Pass-through anything that isn't a recognized emoji
 	//"string" is a UTF-8 byte array.
 	
 	//This will be simple if only 1 line is required.
-	if (!multiline) {
+	//if (!multiline) {
 		RECT r;
 		r.right = x + width;
 		r.top = y;
-		r.bottom = y + maxHeight;
+		r.bottom = y + lineHeight;
 
 		//Find any emojis and get the width of the text before/between them
 		unsigned int i, textSectionStartIdx, textSectionEndIdx; //"i" is specified in UTF-8 codepoints and the other 2 are bytes
-		unsigned int charSizeInBytes, relativeX, relativeY;
+		unsigned int relativeX, relativeY;
 		int codepoint;
-		int isEmoji;
 		i = textSectionStartIdx = relativeX = relativeY = 0;
-		while (bytes > 0) {
+		while (bytes > 0 && relativeX < width) {
 			codepoint = UTF8ToCodepoint(ptr, &charSizeInBytes, bytes);
 			//MessageBox(NULL, wstring(L"Successful codepoint=" + to_wstring((long long)codepoint)+L", char bytes=" + to_wstring((long long)charSizeInBytes) + L", remaining bytes=" + to_wstring((long long)bytes)).c_str(), L"", MB_OK);
 			if (codepoint < 0) {
@@ -3372,24 +3380,32 @@ unsigned int DrawTextWithColorEmojis(HDC hdc, unsigned int x, unsigned int y, un
 				tmp += ((wchar_t)codepoint);
 			} else {
 				//MessageBox(NULL, wstring(L"About to check isEmoji with codepoint " + to_wstring((long long)codepoint)).c_str(), L"", MB_OK);
-				isEmoji = UTF8CodepointIsEmoji(codepoint);
-				//MessageBox(NULL, wstring(L"codepoint=" + to_wstring((long long)codepoint) + L", isEmoji=" + to_wstring((long long)isEmoji)).c_str(), L"", MB_OK);
+				//isEmoji = UTF8CodepointIsEmoji(codepoint);
+				//Get the specific emoji variant
+				isEmoji = ReadEmoji(ptr, &charSizeInBytes, bytes);
+				//MessageBox(NULL, wstring(L"codepoint=" + to_wstring((long long)codepoint) + L", isEmoji=" + to_wstring((long long)isEmoji) + L", size=" + to_wstring((long long)charSizeInBytes)).c_str(), L"", MB_OK);
 				if (isEmoji >= 0) {
 					//Draw the preceding text, if any, and then the emoji
 					//textSectionEndIdx = i;
 					if (tmp.length() > 0/*(textSectionEndIdx - textSectionStartIdx) > 0*/) {
 						//Draw the text
+						if (shouldAdd4PxSpacing) relativeX += 4;
 						r.left = x + relativeX;
 						//tmp = cv.from_bytes((const char*)(ptr + textSectionStartIdx), (const char*)(ptr + textSectionEndIdx + 1));
-						ExtTextOut(hdc, r.left, y, ETO_CLIPPED, &r, tmp.c_str(), tmp.length(), NULL);
+						if (!calculateOnly) ExtTextOut(hdc, r.left, y, ETO_CLIPPED, &r, tmp.c_str(), tmp.length(), NULL);
+						GetTextExtentPoint32(hdc, tmp.c_str(), tmp.length(), &s);
+						relativeX += s.cx;
 						//MessageBox(NULL, tmp.c_str(), L"", MB_OK);
-						tmp = L"";
+						tmp.clear();
+						shouldAdd4PxSpacing = true;
 					}
 					//Draw the emoji
 					//drawEmoji(HDC hdc, unsigned char *ptr, int initialEmojiIdx, unsigned int x, unsigned int y, unsigned int size, unsigned int *charSizeInBytes, unsigned int maxBytes)
-					drawEmoji(hdc, ptr, isEmoji, x + relativeX, y, 18, &charSizeInBytes, bytes);
+					//if (shouldAdd4PxSpacing) relativeX += 4;
+					if (!calculateOnly) drawEmoji(hdc, ptr, isEmoji, x + relativeX, y, lineHeight);
 					//ptr += charSizeInBytes;
-					relativeX += (18 + 4 + 4);
+					relativeX += lineHeight;
+					shouldAdd4PxSpacing = true;
 				} else {
 					//The character was not a recognized emoji so increase the length of the text section
 					tmp += ((wchar_t)codepoint);
@@ -3402,28 +3418,35 @@ unsigned int DrawTextWithColorEmojis(HDC hdc, unsigned int x, unsigned int y, un
 		}
 		
 		//Draw any remaining text
-		if (tmp.length() > 0 && relativeX < width/*(textSectionEndIdx - textSectionStartIdx) > 0*/) {
+		if (relativeX < width && tmp.length() > 0/*(textSectionEndIdx - textSectionStartIdx) > 0*/) {
 			//Draw the text
+			//if (shouldAdd4PxSpacing) relativeX += 4;
 			r.left = x + relativeX;
 			//tmp = cv.from_bytes((const char*)(ptr + textSectionStartIdx), (const char*)(ptr + textSectionEndIdx + 1));
-			ExtTextOut(hdc, r.left, y, ETO_CLIPPED, &r, tmp.c_str(), tmp.length(), NULL);
+			if (!calculateOnly) ExtTextOut(hdc, r.left, y, ETO_CLIPPED, &r, tmp.c_str(), tmp.length(), NULL);
+			GetTextExtentPoint32(hdc, tmp.c_str(), tmp.length(), &s);
+			if (s.cy > lineHeight) lineHeight = s.cy;
+			if (textSize != NULL) {
+				textSize->cx = relativeX + s.cx;
+				textSize->cy = lineHeight;
+			}
 			//MessageBox(NULL, tmp.c_str(), L"", MB_OK);
 			tmp.clear();
 		}
 		
 		return 0;//height;
-	}
+	//}
 	
 	//We need to go word by word
 	//Sentences will be broken at word boundaries when they are too long to fit on 1 line
 	//Words that are too long will start on a new line and be broken as needed
-	unsigned int remainingBytes = bytes;
-	unsigned int charLength;
-	unsigned int wordStartCodepoint, wordEndCodepoint;
-	wordStartCodepoint = wordEndCodepoint = 0;
+	unsigned int wordStartByte, wordEndByte;
+	wordStartByte = wordEndByte = 0;
 	for (unsigned int i = 0; i < bytes; i++) {
-		//
-		if (UTF8CodepointIsEmoji(UTF8ToCodepoint(ptr, &charLength, remainingBytes)) >= 0) {
+		isEmoji = ReadEmoji(ptr, &charSizeInBytes, bytes);
+		ptr += charSizeInBytes;
+		bytes -= charSizeInBytes;
+		if (isEmoji >= 0) {
 			//We need to stop drawing text and draw an emoji
 		} else {
 			//Add the non-emoji character to the string and draw it
@@ -3431,6 +3454,105 @@ unsigned int DrawTextWithColorEmojis(HDC hdc, unsigned int x, unsigned int y, un
 	}
 	
 	return 0;
+}
+
+int ReadEmoji(unsigned char *byteArray, unsigned int *charLength, unsigned int maxBytes) {
+	//Check if byteArray points to an emoji character
+	unsigned char *ptr = byteArray;
+	unsigned int _charLength;
+	int tmp = UTF8ToCodepoint(byteArray, &_charLength, maxBytes);
+	int isEmoji = UTF8CodepointIsEmoji(tmp);
+	//MessageBox(NULL, wstring(L"isEmoji=" + to_wstring((long long)isEmoji)).c_str(), L"", MB_OK);
+	*charLength = _charLength;
+	if (isEmoji < 0) return isEmoji;
+	unsigned int firstCodepoint = emojiCodepoints[isEmoji][0];
+	
+	//Check if this is an emoji with modifiers
+	//Check down first
+	int emojiIdx = isEmoji;
+	ptr += _charLength;
+	maxBytes -= _charLength;
+	int bestFullMatchIdx = -1;//isEmoji;
+	unsigned int _emojiCodepointCount;
+	unsigned int decodedCodepoints = 1;
+	unsigned int codepoints[8]; //Emojis can have up to 8 codepoints
+	unsigned int cumulativeCodepointBytes[8];
+	codepoints[0] = firstCodepoint;
+	cumulativeCodepointBytes[0] = _charLength;
+	
+	//Try to find a match. Read additional codepoints if necessary
+	//Find the beginning of the list of variants of the first character since
+	//the binary search used in UTF8CodepointIsEmoji() could have returned an item
+	//in the middle of a group of emojis with modifiers.
+	while (emojiIdx > 0 && emojiCodepoints[emojiIdx - 1][0] == firstCodepoint) emojiIdx--;
+	//emojiIdx++; //Increment this because there's no need to check the first variant
+	
+	//emojiIdx now has the index of the 2nd variant of the emoji we're trying to match
+	bool mismatch;
+	bool failedToLoadCodepoints = false;
+	unsigned int failedCodepointCount;
+	int codepoint;
+	unsigned int matchedCodepoints;
+	unsigned int highestMatchedCodepoints = 0;
+	while (emojiCodepoints[emojiIdx][0] == firstCodepoint) {
+		//Find out how many codepoints are needed for this emoji variant
+		_emojiCodepointCount = emojiCodepointCount[emojiIdx];
+
+		//Don't bother checking this variant if we're too close to the end of the string
+		//For example, an 8-codepoint emoji and only 3 remaining bytes
+		if (failedToLoadCodepoints && _emojiCodepointCount >= failedCodepointCount) {
+			emojiIdx++;
+			continue;
+		}
+		
+		//Load more codepoints if necessary
+		if (_emojiCodepointCount > decodedCodepoints) {
+			for (unsigned int i = decodedCodepoints; i < 8; i++) {
+				//UTF8ToCodepoint(unsigned char* byteArray, unsigned int *charLength, unsigned int maxBytes)
+				codepoint = UTF8ToCodepoint(ptr, &_charLength, maxBytes);
+				if (codepoint < 0) {
+					failedToLoadCodepoints = true;
+					failedCodepointCount = i;
+					break;
+				}
+				codepoints[i] = codepoint;
+				decodedCodepoints++;
+				ptr += _charLength;
+				maxBytes -= _charLength;
+				cumulativeCodepointBytes[i] = cumulativeCodepointBytes[i - 1] + _charLength;
+			}
+		}
+		
+		//Continue if we couldn't load enough codepoints
+		if (_emojiCodepointCount > decodedCodepoints) {
+			emojiIdx++;
+			continue;
+		}
+		
+		//Compare the loaded codepoints to the current emoji variant
+		mismatch = false;
+		matchedCodepoints = 1;
+		for (unsigned int i = 1; i < _emojiCodepointCount; i++) {
+			if (codepoints[i] != emojiCodepoints[emojiIdx][i]) {
+				mismatch = true;
+				break;
+			} else {
+				matchedCodepoints++;
+			}
+		}
+		if (!mismatch) {
+			if (matchedCodepoints > highestMatchedCodepoints) {
+				highestMatchedCodepoints = matchedCodepoints;
+				*charLength = cumulativeCodepointBytes[highestMatchedCodepoints - 1];
+				bestFullMatchIdx = emojiIdx;
+			}
+		}
+
+		emojiIdx++;
+	}
+	wstring debug = L"ReadEmoji("+utf8_to_wstring(string((char*)byteArray))+L"), consumed "+to_wstring((long long)*charLength)+L" bytes, returning "+to_wstring((long long)bestFullMatchIdx);
+	//MessageBox(NULL, debug.c_str(), L"", MB_OK);
+	return bestFullMatchIdx;
 }
 
 int UTF8CodepointIsEmoji(int codepoint) {
@@ -3445,9 +3567,10 @@ int UTF8CodepointIsEmoji(int codepoint) {
 	while (true) {
 		midpoint = (lowerBound + upperBound) >> 1;
 		ptr	= emojiCodepoints[midpoint];
-		//if (codepoint == 32) MessageBox(NULL, wstring(L"UTF8CodepointIsEmoji() Attempt #"+to_wstring((long long)cycle)+L": lower="+to_wstring((long long)lowerBound)+L", mid="+to_wstring((long long)midpoint)+L", upper="+to_wstring((long long)upperBound)+L", target="+to_wstring((long long)codepoint)).c_str(), L"", MB_OK);
-		if ((lowerBound >= upperBound || lowerBound == midpoint) && (*ptr) != codepoint) break;
+		//MessageBox(NULL, wstring(L"UTF8CodepointIsEmoji() Attempt #"+to_wstring((long long)cycle)+L": lower="+to_wstring((long long)lowerBound)+L", mid="+to_wstring((long long)midpoint)+L", upper="+to_wstring((long long)upperBound)+L", target="+to_wstring((long long)codepoint)).c_str(), L"", MB_OK);
+		if ((lowerBound >= upperBound/* || lowerBound == midpoint*/) && (*ptr) != codepoint) break;
 		if ((*ptr) == codepoint) {
+			//MessageBox(NULL, wstring(L"Codepoint " + to_wstring((long long)codepoint) + L" is an emoji with index " + to_wstring((long long)midpoint)).c_str(), L"", MB_OK);
 			return midpoint;
 		} else if ((*ptr) > codepoint) {
 			upperBound = midpoint - 1;
@@ -3522,16 +3645,15 @@ int UTF8ToCodepoint(unsigned char* byteArray, unsigned int *charLength, unsigned
 	return retVal;
 }
 
-void drawEmoji(HDC hdc, unsigned char *ptr, int initialEmojiIdx, unsigned int x, unsigned int y, unsigned int size, unsigned int *charSizeInBytes, unsigned int maxBytes) {
-	UTF8ToCodepoint(ptr, charSizeInBytes, maxBytes);
-	bool emojiIsInMemory = emojiIsLoaded[initialEmojiIdx / 8] & (1 << (7 - (initialEmojiIdx % 8)));
+void drawEmoji(HDC hdc, unsigned char *ptr, int emojiIdx, unsigned int x, unsigned int y, unsigned int size) {
+	bool emojiIsInMemory = emojiIsLoaded[emojiIdx / 8] & (1 << (7 - (emojiIdx % 8)));
 	if (!emojiIsInMemory) {
 		string filename = ".\\img\\emojis\\";
-		filename += emojiFilenames[initialEmojiIdx];
+		filename += emojiFilenames[emojiIdx];
 		filename += ".png";
 		Gdiplus::Bitmap bmp(utf8_to_wstring(filename).c_str(), false);
-		bmp.GetHBITMAP(RGB(54,57,63), &emojiBitmaps[initialEmojiIdx]);
+		bmp.GetHBITMAP(RGB(54,57,63), &emojiBitmaps[emojiIdx]);
 	}
-	SelectObject(tempHDC, emojiBitmaps[initialEmojiIdx]);
+	SelectObject(tempHDC, emojiBitmaps[emojiIdx]);
 	StretchBlt(hdc, x, y, size, size, tempHDC, 0, 0, 72, 72, SRCCOPY);
 }
