@@ -1215,7 +1215,7 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 
 				ChannelGroup cg;
 				ChannelItem c;
-				cg.name = "CHAT...";
+				cg.name = "CHAT💬🍒...";
 				c.name = "swarm only";
 				c.unread = false;
 				c.locked = true;
@@ -1264,8 +1264,8 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 
 				cg.channels.clear();
 
-				cg.name = "MISC...";
-				c.name = "lobby";
+				cg.name = "MISC👍...";
+				c.name = "chat3⃣lobby";
 				c.unread = true;
 				c.locked = false;
 				c.voiceChannel = false;
@@ -1389,9 +1389,9 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 			r.top += 50;
 			//r.bottom -= 25;
 			r.right -= 15;
-			pData->hwndScrollbar = CreateWindowExW(NULL, L"SCROLLBAR",L"", WS_CHILD | SBS_VERT | WS_VISIBLE, r.right, 50, 15, height, wnd, (HMENU)NULL, (HINSTANCE)GetWindowLong(wnd, GWL_HINSTANCE), NULL);
+			pData->hwndScrollbar = CreateWindowExW(NULL, L"SCROLLBAR",L"", WS_CHILD | SBS_VERT | WS_VISIBLE, r.right, 50, 15, height - 50, wnd, (HMENU)NULL, (HINSTANCE)GetWindowLong(wnd, GWL_HINSTANCE), NULL);
 			int w = r.right - r.left;
-			MoveWindow(pData->hwndScrollbar, r.right - 15, 0, 15, height, TRUE);
+			MoveWindow(pData->hwndScrollbar, r.right - 15, 50, 15, height - 50, TRUE);
 
 			unsigned int totalItems = 0;
 			for (unsigned int i = 0; i < pData->dataModel.size(); i++) {
@@ -1426,7 +1426,7 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 				int h = r.bottom - r.top;
 				//FillRect(hdc, &r, serverListColorBrush);
 
-				MoveWindow(pData->hwndScrollbar, r.right - 15, 50, 15, h, TRUE);
+				MoveWindow(pData->hwndScrollbar, r.right - 15, 50, 15, h - 50, TRUE);
 
 				//Redraw the entire list
 				{
@@ -1915,7 +1915,7 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 				GetClientRect(wnd, &r);
 				int w = r.right - r.left;
 				int h = r.bottom - r.top;
-				MoveWindow(pData->hwndScrollbar, r.right - 15, 50, 15, h, TRUE);
+				MoveWindow(pData->hwndScrollbar, r.right - 15, 50, 15, h - 50, TRUE);
 
 				unsigned int totalItems = 0;
 				for (unsigned int i = 0; i < pData->dataModel.size(); i++) {
