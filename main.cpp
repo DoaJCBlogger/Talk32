@@ -72,6 +72,7 @@ int UTF8ToCodepoint(unsigned char*, unsigned int*, unsigned int);
 int UTF8CodepointIsEmoji(int);
 void drawEmoji(HDC, unsigned char*, int, unsigned int, unsigned int, unsigned int);
 int ReadEmoji(unsigned char*, unsigned int*, unsigned int);
+unsigned int GetMaxTextLengthForPixelWidth(HDC, unsigned int, wstring, unsigned int*);
 
 //Contains a font fix provided by "Christopher Janzon" on stackoverflow.com
 //https://stackoverflow.com/a/17075471
@@ -148,7 +149,7 @@ bool CALLBACK SetFont(HWND child, LPARAM font);
 bool RectangleWidthHeight(HDC hdc, int x, int y, int w, int h);
 bool RoundRectWidthHeight(HDC hdc, int x, int y, int w, int h, int rw, int rh);
 void SetRectXYWidthHeight(RECT* r, long x, long y, long w, long h);
-unsigned int getMessageHeight(unsigned int, wstring);
+unsigned int getMessageHeight(unsigned int, string);
 size_t urlWriteCallback(char*, size_t, size_t, void*);
 HWND hwndMainWin, statusBar, authTokenBox, messageField, httpResponseLabel, loginBtn, hwndServerList, hwndLeftSidebar, hwndContentArea, offlineBtn;
 HBRUSH windowBGBrush, mainGrayColorBrush, messageFieldBGBrush, discordBlueBtnBrush, discordBlueBtnHoverBrush, discordBlueBtnDownBrush, serverListColorBrush, sidebarColorBrush, serverListHoverColor, serverListSelectedColor;// = (HBRUSH)GetStockObject(WHITE_BRUSH);
@@ -2602,7 +2603,7 @@ LRESULT CALLBACK contentAreaProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 				
 				m.authorID = 196483655453900801;
 				m.id = 776242881698070588;
-				m.text = "do you think the authorities got traka? he really was spilling secrets, and i did put in an FBI tip...";
+				m.text = "-2-1👩‍💼0123456👩‍💼78901234567890123456789012345678901234567890123456789012345678901234567890123456789💼0123456789012345678901234567890123456789 do you think the authorities got traka? he really was spilling secrets, and i did put in an FBI tip...👩‍💼";
 				pData->messages.push_back(m);
 				
 				m.authorID = 545703069783031828;
@@ -3006,14 +3007,16 @@ LRESULT CALLBACK contentAreaProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 	return DefWindowProcW(wnd, msg, wParam, lParam);
 }
 
-unsigned int getMessageHeight(unsigned int width, wstring message) {
-	RECT textRect;
+unsigned int getMessageHeight(unsigned int width, string message) {
+	/*RECT textRect;
 	textRect.left = 0;
 	textRect.top = 0;
-	textRect.right = width;
-	DrawText(tempHDC, message.c_str(), message.length(), &textRect, DT_WORDBREAK | DT_EDITCONTROL | DT_CALCRECT);
+	textRect.right = width;*/
+	SIZE sz;
+	//DrawText(tempHDC, message.c_str(), message.length(), &textRect, DT_WORDBREAK | DT_EDITCONTROL | DT_CALCRECT);
+	DrawTextWithColorEmojis(tempHDC, 0, 0, width, true, (unsigned char*)message.c_str(), message.length(), true, &sz);
 	
-	unsigned int height = textRect.bottom - textRect.top;
+	unsigned int height = sz.cy;//textRect.bottom - textRect.top;
 	if (height < 40) height = 40;
 	height += MESSAGE_SPACING;
 	return height;
@@ -3314,7 +3317,7 @@ void recalculateTotalMessageHeight(bool addLastMessageHeight) {
 	unsigned int topMessageHeight, bottomMessageHeight;
 	unsigned int idx = 0;
 	for (auto i = globalContentAreaData->messages.begin(); i != globalContentAreaData->messages.end(); i++) {
-		topMessageHeight = getMessageHeight(messageWidth, utf8_to_wstring(i->text.c_str()));
+		topMessageHeight = getMessageHeight(messageWidth, i->text.c_str());
 		if (idx == 0) bottomMessageHeight = topMessageHeight;
 		i->messageHeight = topMessageHeight;
 		//MessageBox(NULL, to_wstring((long long)topMessageHeight).c_str(), L"", MB_OK);
@@ -3347,31 +3350,32 @@ void recalculateTotalMessageHeight(bool addLastMessageHeight) {
 	InvalidateRect(hwndContentArea, NULL, FALSE);
 }
 
-unsigned int DrawTextWithColorEmojis(HDC hdc, unsigned int x, unsigned int y, unsigned int width, bool multiline, unsigned char *string, unsigned int bytes, bool calculateOnly, SIZE *textSize) {
+unsigned int DrawTextWithColorEmojis(HDC hdc, unsigned int x, unsigned int y, unsigned int width, /*TODO: height*/ bool multiline, unsigned char *string, unsigned int bytes, bool calculateOnly, SIZE *textSize) {
 	//wstring_convert<codecvt_utf8<wchar_t>> cv;
 	wstring tmp;
 	unsigned char *ptr = string;
+	RECT r;
 	SIZE s;
 	int isEmoji;
 	bool shouldAdd4PxSpacing = false;
 	GetTextExtentPoint32(hdc, L"A", 1, &s);
 	unsigned int lineHeight = s.cy;
 	unsigned int charSizeInBytes;
+	int codepoint;
+	unsigned int relativeX, relativeY;
+	relativeX = relativeY = 0;
 	//Pass-through anything that isn't a recognized emoji
 	//"string" is a UTF-8 byte array.
 	
 	//This will be simple if only 1 line is required.
-	//if (!multiline) {
-		RECT r;
+	if (!multiline) {
 		r.right = x + width;
 		r.top = y;
 		r.bottom = y + lineHeight;
 
 		//Find any emojis and get the width of the text before/between them
 		unsigned int i, textSectionStartIdx, textSectionEndIdx; //"i" is specified in UTF-8 codepoints and the other 2 are bytes
-		unsigned int relativeX, relativeY;
-		int codepoint;
-		i = textSectionStartIdx = relativeX = relativeY = 0;
+		i = textSectionStartIdx = 0;
 		while (bytes > 0 && relativeX < width) {
 			codepoint = UTF8ToCodepoint(ptr, &charSizeInBytes, bytes);
 			//MessageBox(NULL, wstring(L"Successful codepoint=" + to_wstring((long long)codepoint)+L", char bytes=" + to_wstring((long long)charSizeInBytes) + L", remaining bytes=" + to_wstring((long long)bytes)).c_str(), L"", MB_OK);
@@ -3435,14 +3439,294 @@ unsigned int DrawTextWithColorEmojis(HDC hdc, unsigned int x, unsigned int y, un
 		}
 		
 		return 0;//height;
-	//}
+	}
 	
 	//We need to go word by word
 	//Sentences will be broken at word boundaries when they are too long to fit on 1 line
 	//Words that are too long will start on a new line and be broken as needed
 	unsigned int wordStartByte, wordEndByte;
 	wordStartByte = wordEndByte = 0;
-	for (unsigned int i = 0; i < bytes; i++) {
+	bool lineStart = true;
+	bool shouldDisregardLineBreak = false; //This is to prevent double line breaks for Windows newline character pairs
+	unsigned int maxChars, textWidth, totalHeight;
+	totalHeight = lineHeight;
+	//Loop until we find the end of a word
+	while (bytes > 0) {
+		codepoint = UTF8ToCodepoint(ptr, &charSizeInBytes, bytes);
+		if (codepoint < 0) {
+			codepoint = 63; //An ASCII question mark. This is not a recognized emoji so increase the length of the text section
+			tmp += ((wchar_t)codepoint);
+		} else if (codepoint == 10 || codepoint == 13) {
+			if (!shouldDisregardLineBreak) {
+				y += lineHeight;
+				totalHeight += lineHeight;
+				relativeX = 0;
+				lineStart = true;
+				shouldDisregardLineBreak = true;
+			} else {
+				shouldDisregardLineBreak = false;
+			}
+		} else if (codepoint == 32 || codepoint == 45) {
+			//Draw a word since we reached a space or hyphen
+			//Check if the word can fit on the current line
+			GetTextExtentPoint32(hdc, tmp.c_str(), tmp.length(), &s);
+			//MessageBox(NULL, wstring(tmp + L", width=" + to_wstring((long long)s.cx) + L", limit=" + to_wstring((long long)(width - relativeX))).c_str(), L"", MB_OK);
+			if (s.cx > (width - relativeX)) {
+				//The word won't fit on the current line
+				if (lineStart) {
+					//If this is the first word on the current line, then the word needs to be broken
+					//maxChars = GetMaxTextLengthForPixelWidth(hdc, width, tmp, &textWidth);
+					//Start printing the word and breaking it as needed
+					while (!tmp.empty()) {
+						relativeX = 0;
+						maxChars = GetMaxTextLengthForPixelWidth(hdc, width - relativeX, tmp, &textWidth);
+						r.left = x + relativeX;
+						r.top = y;
+						r.bottom = y + lineHeight;
+						r.right = x + width;
+						if (!calculateOnly) ExtTextOut(hdc, r.left, y, ETO_CLIPPED, &r, tmp.c_str(), maxChars, NULL);
+						if (tmp.length() == maxChars) break;
+						y += lineHeight;
+						totalHeight += lineHeight;
+						tmp = tmp.substr(maxChars, wstring::npos);
+					}
+					tmp = (wchar_t)codepoint;
+					relativeX = textWidth;
+					//MessageBox(NULL, wstring(L"relativeX=" + to_wstring((long long)relativeX)).c_str(), L"", MB_OK);
+					lineStart = false;
+				} else {
+					//If this is not the first word on the current line,
+					//		and the word will fit on a single line, then we need to go to the next line
+					//		and the word will not fit on a single line, then we should break it starting on the current line
+					if (s.cx > width) {
+						//Start printing the word and breaking it as needed
+						while (!tmp.empty()) {
+							maxChars = GetMaxTextLengthForPixelWidth(hdc, width - relativeX, tmp, &textWidth);
+							r.left = x + relativeX;
+							r.top = y;
+							r.bottom = y + lineHeight;
+							r.right = x + width;
+							if (!calculateOnly) ExtTextOut(hdc, r.left, y, ETO_CLIPPED, &r, tmp.c_str(), maxChars, NULL);
+							if (tmp.length() == maxChars) break;
+							y += lineHeight;
+							totalHeight += lineHeight;
+							relativeX = 0;
+							tmp = tmp.substr(maxChars, wstring::npos);
+						}
+						relativeX = textWidth;
+						lineStart = false;
+					} else {
+						y += lineHeight;
+						totalHeight += lineHeight;
+						relativeX = 0;
+						
+						r.left = x + relativeX;
+						r.top = y;
+						r.bottom = y + lineHeight;
+						r.right = x + width;
+						if (!calculateOnly) ExtTextOut(hdc, r.left, y, ETO_CLIPPED, &r, tmp.c_str(), tmp.length(), NULL);
+						relativeX += s.cx;
+						lineStart = false;
+						tmp = (wchar_t)codepoint;
+
+						lineStart = false;
+					}
+					
+					
+					
+					/*//Check if the word will fit now
+					if (s.cx > (width - relativeX)) {
+						//The word still won't fit so it has to be broken
+						
+					} else {
+						//The word will fit on a new line
+						r.left = x + relativeX;
+						r.top = y;
+						r.bottom = y + lineHeight;
+						r.right = x + width;
+						ExtTextOut(hdc, r.left, y, ETO_CLIPPED, &r, tmp.c_str(), tmp.length(), NULL);
+						relativeX += s.cx;
+						lineStart = false;
+						tmp = (wchar_t)codepoint;
+					}*/
+				}
+			} else {
+				//The word will fit on the current line
+				//MessageBox(NULL, tmp.c_str(), L"", MB_OK);
+				r.left = x + relativeX;
+				r.top = y;
+				r.bottom = y + lineHeight;
+				r.right = x + width;
+				if (!calculateOnly) ExtTextOut(hdc, r.left, y, ETO_CLIPPED, &r, tmp.c_str(), tmp.length(), NULL);
+				relativeX += s.cx;
+				lineStart = false;
+				tmp = (wchar_t)codepoint;
+			}
+		} else {
+			isEmoji = ReadEmoji(ptr, &charSizeInBytes, bytes);
+			if (isEmoji >= 0) {
+				//Draw the emoji
+				//Don't get into an infinite loop if the emoji is wider than the max paragraph width
+				if (!tmp.empty()) {
+					//If this is not the first word on the current line,
+					//		and the word will fit on a single line, then we need to go to the next line
+					//		and the word will not fit on a single line, then we should break it starting on the current line
+					GetTextExtentPoint32(hdc, tmp.c_str(), tmp.length(), &s);
+					if (s.cx > (width - relativeX)) {
+						//Start printing the word and breaking it as needed
+						y += lineHeight;
+						totalHeight += lineHeight;
+						relativeX = 0;
+						lineStart = true;
+						while (!tmp.empty()) {
+							maxChars = GetMaxTextLengthForPixelWidth(hdc, width - relativeX, tmp, &textWidth);
+							r.left = x + relativeX;
+							r.top = y;
+							r.bottom = y + lineHeight;
+							r.right = x + width;
+							if (!calculateOnly) ExtTextOut(hdc, r.left, y, ETO_CLIPPED, &r, tmp.c_str(), maxChars, NULL);
+							if (tmp.length() == maxChars) break;
+							y += lineHeight;
+							totalHeight += lineHeight;
+							relativeX = 0;
+							tmp = tmp.substr(maxChars, wstring::npos);
+						}
+						relativeX = textWidth;
+						lineStart = false;
+					} else {
+						//y += lineHeight;
+						//relativeX = 0;
+						
+						r.left = x + relativeX;
+						r.top = y;
+						r.bottom = y + lineHeight;
+						r.right = x + width;
+						if (!calculateOnly) ExtTextOut(hdc, r.left, y, ETO_CLIPPED, &r, tmp.c_str(), tmp.length(), NULL);
+						relativeX += s.cx;
+						lineStart = false;
+					}
+				}
+				tmp.clear();
+				
+				if (lineHeight > (width - relativeX)) {
+					//The emoji won't fit on this line
+					relativeX = 0;
+					y += lineHeight;
+					totalHeight += lineHeight;
+				}
+				if (!calculateOnly) drawEmoji(hdc, ptr, isEmoji, x + relativeX, y, lineHeight);
+				relativeX += lineHeight;
+				lineStart = false;
+			} else {
+				tmp += ((wchar_t)codepoint);
+			}
+		}
+		ptr += charSizeInBytes;
+		bytes -= charSizeInBytes;
+	}
+	
+	//Draw any remaining text
+	//The text that remains is guaranteed to be a single word without emojis
+	GetTextExtentPoint32(hdc, tmp.c_str(), tmp.length(), &s);
+	//MessageBox(NULL, wstring(tmp + L", width=" + to_wstring((long long)s.cx) + L", limit=" + to_wstring((long long)(width - relativeX))).c_str(), L"", MB_OK);
+	if (s.cx > (width - relativeX)) {
+		//The word won't fit on the current line
+		if (lineStart) {
+			//If this is the first word on the current line, then the word needs to be broken
+			//maxChars = GetMaxTextLengthForPixelWidth(hdc, width, tmp, &textWidth);
+			//Start printing the word and breaking it as needed
+			while (!tmp.empty()) {
+				relativeX = 0;
+				maxChars = GetMaxTextLengthForPixelWidth(hdc, width - relativeX, tmp, &textWidth);
+				r.left = x + relativeX;
+				r.top = y;
+				r.bottom = y + lineHeight;
+				r.right = x + width;
+				if (!calculateOnly) ExtTextOut(hdc, r.left, y, ETO_CLIPPED, &r, tmp.c_str(), maxChars, NULL);
+				if (tmp.length() == maxChars) break;
+				y += lineHeight;
+				totalHeight += lineHeight;
+				tmp = tmp.substr(maxChars, wstring::npos);
+			}
+			tmp = (wchar_t)codepoint;
+			relativeX = textWidth;
+			//MessageBox(NULL, wstring(L"relativeX=" + to_wstring((long long)relativeX)).c_str(), L"", MB_OK);
+			lineStart = false;
+		} else {
+			//If this is not the first word on the current line,
+			//		and the word will fit on a single line, then we need to go to the next line
+			//		and the word will not fit on a single line, then we should break it starting on the current line
+			if (s.cx > width) {
+				//Start printing the word and breaking it as needed
+				while (!tmp.empty()) {
+					maxChars = GetMaxTextLengthForPixelWidth(hdc, width - relativeX, tmp, &textWidth);
+					r.left = x + relativeX;
+					r.top = y;
+					r.bottom = y + lineHeight;
+					r.right = x + width;
+					if (!calculateOnly) ExtTextOut(hdc, r.left, y, ETO_CLIPPED, &r, tmp.c_str(), maxChars, NULL);
+					if (tmp.length() == maxChars) break;
+					y += lineHeight;
+					totalHeight += lineHeight;
+					relativeX = 0;
+					tmp = tmp.substr(maxChars, wstring::npos);
+				}
+				relativeX = textWidth;
+				lineStart = false;
+			} else {
+				y += lineHeight;
+				totalHeight += lineHeight;
+				relativeX = 0;
+				
+				r.left = x + relativeX;
+				r.top = y;
+				r.bottom = y + lineHeight;
+				r.right = x + width;
+				if (!calculateOnly) ExtTextOut(hdc, r.left, y, ETO_CLIPPED, &r, tmp.c_str(), tmp.length(), NULL);
+				relativeX += s.cx;
+				lineStart = false;
+				tmp = (wchar_t)codepoint;
+
+				lineStart = false;
+			}
+			
+			
+			
+			/*//Check if the word will fit now
+			if (s.cx > (width - relativeX)) {
+				//The word still won't fit so it has to be broken
+				
+			} else {
+				//The word will fit on a new line
+				r.left = x + relativeX;
+				r.top = y;
+				r.bottom = y + lineHeight;
+				r.right = x + width;
+				ExtTextOut(hdc, r.left, y, ETO_CLIPPED, &r, tmp.c_str(), tmp.length(), NULL);
+				relativeX += s.cx;
+				lineStart = false;
+				tmp = (wchar_t)codepoint;
+			}*/
+		}
+	} else {
+		//The word will fit on the current line
+		//MessageBox(NULL, tmp.c_str(), L"", MB_OK);
+		r.left = x + relativeX;
+		r.top = y;
+		r.bottom = y + lineHeight;
+		r.right = x + width;
+		if (!calculateOnly) ExtTextOut(hdc, r.left, y, ETO_CLIPPED, &r, tmp.c_str(), tmp.length(), NULL);
+		relativeX += s.cx;
+		lineStart = false;
+		tmp = (wchar_t)codepoint;
+	}
+	
+	if (textSize != NULL) {
+		textSize->cx = width; //TODO: return the actual width if the text required only 1 line
+		textSize->cy = totalHeight;
+	}
+	
+	/*for (unsigned int i = 0; i < bytes; i++) {
 		isEmoji = ReadEmoji(ptr, &charSizeInBytes, bytes);
 		ptr += charSizeInBytes;
 		bytes -= charSizeInBytes;
@@ -3451,7 +3735,7 @@ unsigned int DrawTextWithColorEmojis(HDC hdc, unsigned int x, unsigned int y, un
 		} else {
 			//Add the non-emoji character to the string and draw it
 		}
-	}
+	}*/
 	
 	return 0;
 }
@@ -3653,7 +3937,43 @@ void drawEmoji(HDC hdc, unsigned char *ptr, int emojiIdx, unsigned int x, unsign
 		filename += ".png";
 		Gdiplus::Bitmap bmp(utf8_to_wstring(filename).c_str(), false);
 		bmp.GetHBITMAP(RGB(54,57,63), &emojiBitmaps[emojiIdx]);
+		emojiIsLoaded[emojiIdx / 8] |= (1 << (7 - (emojiIdx % 8)));
 	}
 	SelectObject(tempHDC, emojiBitmaps[emojiIdx]);
 	StretchBlt(hdc, x, y, size, size, tempHDC, 0, 0, 72, 72, SRCCOPY);
+}
+
+unsigned int GetMaxTextLengthForPixelWidth(HDC hdc, unsigned int width, wstring str, unsigned int *outputWidth) {
+	SIZE s;
+	//Check if the text will fit as-is
+	GetTextExtentPoint32(hdc, str.c_str(), str.length(), &s);
+	if (s.cx <= width) {
+		*outputWidth = s.cx;
+		return str.length();
+	}
+	
+	//Use a method similar to a binary search to find the maximum number of characters from this string that will fit in the width
+	unsigned int max, oldMax, oldMax2/*, cycle*/;
+	max = str.length() >> 1;
+	oldMax = str.length();
+	//cycle = 0;
+	do {
+		GetTextExtentPoint32(hdc, str.c_str(), max, &s);
+		//MessageBox(NULL, wstring(L"GetMaxTextLength Attempt #" + to_wstring((long long)cycle + 1) + L": \""+str+L"\", width="+to_wstring((long long)width)+L", s.cx="+to_wstring((long long)s.cx)+L", max="+to_wstring((long long)max)+L", oldMax="+to_wstring((long long)oldMax)).c_str(), L"", MB_OK);
+		if (s.cx > width) {
+			oldMax = max;
+			oldMax2 = max;
+			max >>= 1;
+		} else if (s.cx < width) {
+			oldMax2 = max;
+			max = (max + oldMax) >> 1;
+		} else {
+			*outputWidth = s.cx;
+			return max;
+		}
+		//cycle++;
+	} while (max != oldMax2);
+	//MessageBox(NULL, wstring(L"cycles="+to_wstring((long long)cycle)+L", max characters="+to_wstring((long long)max)).c_str(), L"", MB_OK);
+	*outputWidth = s.cx;
+	return max;
 }
