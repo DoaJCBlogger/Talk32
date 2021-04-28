@@ -2591,9 +2591,9 @@ LRESULT CALLBACK contentAreaProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 				m.text = "D:";
 				pData->messages.push_back(m);
 				
-				m.authorID = 226733221499371521;
+				m.authorID = 156948140510019586;
 				m.id = 776250656700891167;
-				m.text = "Schmitty more like Snitchtty";
+				m.text = "😳so you wanna kiss me @fern. ? 😳and then fall in love and we can be dates on dating and date and then you wanna meet each other’s parents... we decide to then get married! we will have a destination marriage in iceland and our honeymoon will be in a cute [hotel] and we will [passionately hug] on a large heartshaped bed and i will become pregnant and when we go to the hospital to check the gender we will find out that its TWINS! one boy and one girl 😱. We name one something basic like jenny and the other one something like theodorkus! I decided its time that we move to a more quiet town and it starts stressing us out and i start drinking and we fall into a loveless marriage and you will start cheating on me with a coworker. One night i will stay up waiting for you to come home... when you get home it is 4 am and i yell at you asking where you’ve been and you tell me you’ve been with your [girlfriend] and that you no longer love me and want to leave me! i start crying and throwing my wine at you. you get angry and hit me, i am shocked, i stare at you and walk upstairs and lie down in bed. you then decide its best to sleep on the couch and call your coworker to talk about the incident. i start walking downstairs to apologize and hear you, you start snickering and tell your new lover that i am a crazy [woman]! OUT OF RAGE I RUN TO THE KITCHEN FOR A KNIFE!! You hear me and turn around confused. I grab the knife and you run over to stop me, you grab me and try to console me and when you try to take the knife i stab you in the neck multiple times! I start crying more and remember the phone, she was listening... i hang up and start shaking. and then she calls the cops and i go to prison :(";
 				pData->messages.push_back(m);
 				
 				m.authorID = 226733221499371521;
@@ -2603,7 +2603,7 @@ LRESULT CALLBACK contentAreaProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 				
 				m.authorID = 196483655453900801;
 				m.id = 776242881698070588;
-				m.text = "-2-1👩‍💼0123456👩‍💼78901234567890123456789012345678901234567890123456789012345678901234567890123456789💼0123456789012345678901234567890123456789 do you think the authorities got traka? he really was spilling secrets, and i did put in an FBI tip...👩‍💼";
+				m.text = "do you think the authorities got traka? he really was spilling secrets, and i did put in an FBI tip...";
 				pData->messages.push_back(m);
 				
 				m.authorID = 545703069783031828;
@@ -2745,7 +2745,7 @@ LRESULT CALLBACK contentAreaProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 				//MessageBox(NULL, debugStr.c_str(), L"", MB_OK);
 				bool addOnce = false;
 				for (auto it = pData->messages.begin(); it != pData->messages.end(); it++) {
-					if (pixelsToAdd > 65) {
+					if (pixelsToAdd > 250/*65*/) { //Using 250 instead of 65 prevents taller messages from disappearing when scrolling up. This number might need to be higher for taller messages so it would be best to use a formula instead
 						pixelsToAdd -= it->messageHeight;
 						continue;
 					}
@@ -3469,6 +3469,7 @@ unsigned int DrawTextWithColorEmojis(HDC hdc, unsigned int x, unsigned int y, un
 		} else if (codepoint == 32 || codepoint == 45) {
 			//Draw a word since we reached a space or hyphen
 			//Check if the word can fit on the current line
+			if (codepoint == 45) tmp += L"-";
 			GetTextExtentPoint32(hdc, tmp.c_str(), tmp.length(), &s);
 			//MessageBox(NULL, wstring(tmp + L", width=" + to_wstring((long long)s.cx) + L", limit=" + to_wstring((long long)(width - relativeX))).c_str(), L"", MB_OK);
 			if (s.cx > (width - relativeX)) {
@@ -3498,6 +3499,7 @@ unsigned int DrawTextWithColorEmojis(HDC hdc, unsigned int x, unsigned int y, un
 					//If this is not the first word on the current line,
 					//		and the word will fit on a single line, then we need to go to the next line
 					//		and the word will not fit on a single line, then we should break it starting on the current line
+					//MessageBox(NULL, wstring(L"tmp.at(0)="+to_wstring((long long)tmp.at(0))).c_str(), L"", MB_OK);
 					if (s.cx > width) {
 						//Start printing the word and breaking it as needed
 						while (!tmp.empty()) {
@@ -3516,6 +3518,11 @@ unsigned int DrawTextWithColorEmojis(HDC hdc, unsigned int x, unsigned int y, un
 						relativeX = textWidth;
 						lineStart = false;
 					} else {
+						if (tmp.length() > 1 && tmp.at(0) == 32) {
+							//TODO: handle multiple contiguous spaces
+							tmp = tmp.substr(1, wstring::npos);
+							GetTextExtentPoint32(hdc, tmp.c_str(), tmp.length(), &s);
+						}
 						y += lineHeight;
 						totalHeight += lineHeight;
 						relativeX = 0;
@@ -3528,8 +3535,6 @@ unsigned int DrawTextWithColorEmojis(HDC hdc, unsigned int x, unsigned int y, un
 						relativeX += s.cx;
 						lineStart = false;
 						tmp = (wchar_t)codepoint;
-
-						lineStart = false;
 					}
 					
 					
@@ -3552,7 +3557,7 @@ unsigned int DrawTextWithColorEmojis(HDC hdc, unsigned int x, unsigned int y, un
 				}
 			} else {
 				//The word will fit on the current line
-				//MessageBox(NULL, tmp.c_str(), L"", MB_OK);
+				//MessageBox(NULL, wstring(L"\""+tmp + L"\"").c_str(), L"", MB_OK);
 				r.left = x + relativeX;
 				r.top = y;
 				r.bottom = y + lineHeight;
@@ -3577,7 +3582,7 @@ unsigned int DrawTextWithColorEmojis(HDC hdc, unsigned int x, unsigned int y, un
 						y += lineHeight;
 						totalHeight += lineHeight;
 						relativeX = 0;
-						lineStart = true;
+						//lineStart = true;
 						while (!tmp.empty()) {
 							maxChars = GetMaxTextLengthForPixelWidth(hdc, width - relativeX, tmp, &textWidth);
 							r.left = x + relativeX;
@@ -3603,7 +3608,7 @@ unsigned int DrawTextWithColorEmojis(HDC hdc, unsigned int x, unsigned int y, un
 						r.right = x + width;
 						if (!calculateOnly) ExtTextOut(hdc, r.left, y, ETO_CLIPPED, &r, tmp.c_str(), tmp.length(), NULL);
 						relativeX += s.cx;
-						lineStart = false;
+						//lineStart = false;
 					}
 				}
 				tmp.clear();
@@ -3723,7 +3728,7 @@ unsigned int DrawTextWithColorEmojis(HDC hdc, unsigned int x, unsigned int y, un
 	
 	if (textSize != NULL) {
 		textSize->cx = width; //TODO: return the actual width if the text required only 1 line
-		textSize->cy = totalHeight;
+		textSize->cy = totalHeight + lineHeight;
 	}
 	
 	/*for (unsigned int i = 0; i < bytes; i++) {
