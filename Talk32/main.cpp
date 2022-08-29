@@ -1470,7 +1470,7 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 					bool shouldStopDrawingChannels = false;
 					BITMAP bmp;
 					HDC iconHDC;
-					HBITMAP channelIcon;
+					HBITMAP channelIcon = NULL;
 					iconHDC = CreateCompatibleDC(hdc);
 					
 					//Get the starting position
@@ -3190,14 +3190,6 @@ void AddMenus(HWND hwndMainWin) {
 	SetMenu(hwndMainWin, hMenuBar);
 }
 
-size_t urlWriteCallback(char* buf, size_t size, size_t nmemb, void* up) {
-	int actualSize = size * nmemb;
-	for (int c = 0; c < actualSize; c++) {
-		data.push_back(buf[c]);
-	}
-	return actualSize;
-}
-
 bool CALLBACK SetFont(HWND child, LPARAM font){
 	if (child == authTokenBox) {
 		SendMessage(child, WM_SETFONT, (LPARAM)authTokenBoxFont, true);
@@ -3210,13 +3202,13 @@ bool CALLBACK SetFont(HWND child, LPARAM font){
 wstring getUserAgent() {
 	//Build the user-agent string
 	//We want to do it here instead of during startup because doesn't support Windows 2000.
-	DWORD windowsVersion = GetVersion();
+	/*DWORD windowsVersion = GetVersion();
 	DWORD majorVersion, minorVersion;
 	majorVersion = (DWORD)(LOBYTE(LOWORD(windowsVersion)));
-	minorVersion = (DWORD)(HIBYTE(LOWORD(windowsVersion)));
+	minorVersion = (DWORD)(HIBYTE(LOWORD(windowsVersion)));*/
 	
 	wstring userAgent = versionString + L" (Windows NT ";
-	userAgent += to_wstring((long long)majorVersion) + L"." + to_wstring((long long)minorVersion);
+	//userAgent += to_wstring((long long)majorVersion) + L"." + to_wstring((long long)minorVersion);
 	
 	SYSTEM_INFO systemInfo;
 	GetNativeSystemInfo(&systemInfo);
@@ -3345,7 +3337,7 @@ void recalculateTotalMessageHeight(bool addLastMessageHeight) {
 		r.top += 48;
 		r.bottom -= 48;
 		r.right -= 15;
-		ScrollWindow(hwndContentArea, 0, -topMessageHeight, &r, &r);
+		ScrollWindow(hwndContentArea, 0, -((int)topMessageHeight), &r, &r);
 	}
 	InvalidateRect(hwndContentArea, NULL, FALSE);
 }
