@@ -1,7 +1,7 @@
 # Talk32
 A lightweight unofficial Discord client that uses only Win32, GDI, and GDI+ for rendering instead of Chrome/Electron. To support modern TLS on Windows XP it uses OpenSSL and provides its own root certificates.
 
-This project is compiled with Visual C++ 2015.
+This project is compiled with version 7.1 of the Windows SDK.
 
 ![Screenshot 1](docs/screenshot1.webp)
 
@@ -18,7 +18,11 @@ This project is compiled with Visual C++ 2015.
 6. Run talk32.exe again and choose Offline Mode.
 
 #### How to build
-1. Build Talk32.sln in Visual Studio
+1. Open the Windows SDK 7.1 command prompt.
+2. Run the command **setenv /xp /x86 /release**
+3. Change to the repository folder with **cd [folder path]**
+4. Run **build.bat**
+5. The result will be a file called talk32.exe
 
 #### Known issues
 - Doesn't connect to Discord yet
