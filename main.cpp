@@ -20,6 +20,7 @@
 #define UNICODE
 
 #include <windows.h>
+#include <process.h>
 #include <windowsx.h>
 #include <initguid.h>
 #include <KnownFolders.h>
@@ -29,6 +30,7 @@
 #include <string>
 #include <iostream>
 #include <fstream>
+#include <sstream>
 #include <codecvt>
 #include <vector>
 #include <gdiplus.h>
@@ -302,6 +304,10 @@ struct ContentAreaData {
 	ContentAreaData():hwndScrollbar(NULL),scrollPos(0),shouldScrollToBottom(true){}
 };
 
+const string opcodes[] = {"Dispatch", "Heartbeat", "Identify", "Presence Update", "Voice State Update", "", "Resume", "Reconnect", "Request Guild Members", "Invalid Session", "Hello", "Heartbeat ACK"};
+
+void heartbeatThread(void* param);
+
 void drawAuthPage(HDC hdc, int w, int h) {
 	//Save a backup of the original GDI object
 	HGDIOBJ originalGDIObj = SelectObject(hdc, GetStockObject(DC_PEN));
@@ -351,7 +357,7 @@ void drawAuthPage(HDC hdc, int w, int h) {
 
 	SelectObject(hdc, originalGDIObj);
 }
-
+CURL *curl;
 void drawMainPage(HDC hdc, int w, int h) {
 	//Save a backup of the original GDI object
 	HGDIOBJ originalGDIObj = SelectObject(hdc, GetStockObject(DC_PEN));
@@ -587,43 +593,140 @@ struct memory {
    size_t size;
 };
 ofstream logFile;
-static size_t cb(void *data, size_t size, size_t nmemb, void *userp)
-{
+int heartbeat_interval = 30000;
+int heartbeat_d = -1;
+bool shouldStopHeartbeats = false;
+bool APIIsLoggedIn = false;
+uintptr_t heartbeatThreadHandle = NULL;
+string resume_gateway_url, session_id;
+char* websocketFragment = NULL;
+unsigned long websocketFragmentSize = 0;
+unsigned long websocketFragmentCurrentIdx = 0;
+unsigned long receivedWebsocketFramesWithinFragment = 0;
+static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *userp) {
 	size_t realsize = size * nmemb;
 	logFile.write((char*)data, realsize);
-	std::string str = "Just wrote websocket data (";
+	std::string str = "Received WebSocket data (";
 	str += std::to_string((long long)realsize);
 	str += " bytes): ";
-	str += (char*)data;
-	MessageBoxA(NULL, str.c_str(), "Error", MB_OK | MB_ICONERROR);
+	str += string((char*)data, realsize);
+	cout << endl << str;
+	
+	curl_ws_frame* frameInfo = curl_ws_meta(curl);
+	cout << endl << "flags=" << frameInfo->flags << ", offset=" << frameInfo->offset << " (actual offset " << websocketFragmentCurrentIdx << "), bytesleft=" << frameInfo->bytesleft;
+	if (receivedWebsocketFramesWithinFragment == 0) {
+		free(websocketFragment);
+		websocketFragment = (char*)malloc(realsize + frameInfo->bytesleft);
+		websocketFragmentSize = realsize + frameInfo->bytesleft;
+		cout << endl << "WebSocket fragment size: " << websocketFragmentSize;
+	}
+	memcpy(websocketFragment + websocketFragmentCurrentIdx, data, realsize);
+	cout << endl << "Copied " << realsize << " bytes to offset " << websocketFragmentCurrentIdx;
+	if (frameInfo->bytesleft > 0) {
+		//This is a partial fragment so we have to just add it to the existing data
+		receivedWebsocketFramesWithinFragment++;
+		websocketFragmentCurrentIdx += realsize;
+		return realsize;
+	}
+	
+	Document responseJSON;
+	cout << endl << "About to parse JSON data: " << string((char*)websocketFragment, websocketFragmentSize);
+	responseJSON.Parse(string((char*)websocketFragment, websocketFragmentSize).c_str());
+	if (responseJSON.HasParseError()) {
+		/*wstring error_msg = L"Error parsing config file (at position ";
+		long long offset = (unsigned)responseJSON.GetErrorOffset();
+		error_msg += to_wstring(offset);
+		error_msg += L"): ";
+		error_msg += utf8_to_wstring(GetParseError_En(responseJSON.GetParseError()));*/
+		cout << endl << "Error while parsing WebSocket data";
+		return realsize;
+	}
 
+	if (!responseJSON.IsObject()) {
+		cout << endl << "Error parsing WebSocket data: root element must be an object";
+		return realsize;
+	}
+	
+	rapidjson::Value::ConstMemberIterator iter = responseJSON.FindMember("op");
+	if (iter == responseJSON.MemberEnd()) {
+		cout << endl << "Could not find \"op\" element";
+		return realsize;
+	}
+	int op = responseJSON["op"].GetInt();
+	cout << endl << "op=" << op;
+	if (op >= 0 && op <= 11) cout << " (" << opcodes[op] << ")";
+	
+	string t = "";
+	if (iter != responseJSON.MemberEnd()) {
+		switch(op) {
+			case 0: //Dispatch
+				//This includes things like READY and MESSAGE_CREATE
+				t = responseJSON["t"].GetString();
+				if (t.compare("READY") == 0) {
+					//Save "resume_gateway_url" and "session_id" so we can resume if we get disconnected
+					APIIsLoggedIn = true;
+					resume_gateway_url = responseJSON["d"]["resume_gateway_url"].GetString();
+					session_id = responseJSON["d"]["session_id"].GetString();
+					cout << endl << "resume_gateway_url=" << resume_gateway_url;
+					cout << endl << "session_id" << session_id;
+				} else if (t.compare("MESSAGE_CREATE") == 0) {
+					cout << endl << "MESSAGE_CREATE: \"" << responseJSON["d"]["content"].GetString() << "\"";
+					break;
+				}
+				break;
+			case 1: //Heartbeat
+				break;
+			case 7: //Reconnect
+				//We need to reconnect
+				//Restart the heartbeat thread
+				shouldStopHeartbeats = true;
+				while (WaitForSingleObject((HANDLE)heartbeatThreadHandle, 0) != WAIT_OBJECT_0) {}
+				shouldStopHeartbeats = false;
+				heartbeatThreadHandle = _beginthread(heartbeatThread, 0, NULL);
+				break;
+			case 9: //Invalid session
+				break;
+			case 10: //Hello
+				//Start the heartbeat thread
+				iter = responseJSON.FindMember("d");
+				if (iter != responseJSON.MemberEnd() && responseJSON["d"]["heartbeat_interval"].IsInt()) {
+					heartbeat_interval = responseJSON["d"]["heartbeat_interval"].GetInt();
+					cout << endl << "Setting heartbeat_interval to " << heartbeat_interval;
+				}
+				shouldStopHeartbeats = false;
+				heartbeatThreadHandle = _beginthread(heartbeatThread, 0, NULL);
+				break;
+			case 11: //Heartbeat ACK
+				if (!APIIsLoggedIn) {
+					//Log in after the first heartbeat acknowledgment
+					size_t sent = 0;
+					string json = "{\"op\": 2, \"d\": {\"properties\": {\"os\": \"windows\", \"browser\": \"" + wstring_to_utf8(getUserAgent()) + "\", \"device\": \"" + wstring_to_utf8(getUserAgent()) + "\"}, \"compress\": false, \"large_threshold\": 250, \"intents\": 3276799, \"token\": \"\"}}";
+					curl_ws_send(curl, json.c_str(), json.length(), &sent, 4096, CURLWS_TEXT);
+				}
+				break;
+		}
+	}
+	
+	receivedWebsocketFramesWithinFragment = 0;
+	websocketFragmentCurrentIdx = 0;
 	return realsize;
 }
 
-int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
-	memset(emojiIsLoaded, 0, (EMOJI_COUNT / 8) + ((EMOJI_COUNT % 8) != 0 ? 1 : 0));
-	CURL *curl = curl_easy_init();
+void websocketThread(void* param) {
+	curl = curl_easy_init();
 	//struct curl_slist *slist=NULL;
 	if (curl) {
-		MessageBoxA(NULL, "Curl initialization worked.","",MB_OK);
+		cout << endl << "Curl initialization worked.";
 		logFile = ofstream("C:\\users\\777\\documents\\curl.log", ios::binary);
 		if (!logFile) {
 			MessageBox(NULL, L"Could not open log file", L"Error", MB_OK | MB_ICONERROR);
 		}
 		
-		//slist = curl_slist_append(NULL, "HTTP/1.1 101 WebSocket Protocol Handshake");
-		//slist = curl_slist_append(slist, "Upgrade: WebSocket");
-		//slist = curl_slist_append(slist, "Connection: Upgrade");
-		//slist = curl_slist_append(slist, "Sec-WebSocket-Version: 13");
-		//slist = curl_slist_append(slist, "Sec-WebSocket-Key: x3JJHMbDL1EzLkh9GBhXDw==");
-		
-		curl_easy_setopt(curl, CURLOPT_URL, "wss://socketsbay.com/wss/v2/1/demo/");
-		//curl_easy_setopt(curl, CURLOPT_HTTPHEADER, slist);
+		curl_easy_setopt(curl, CURLOPT_URL, "wss://gateway.discord.gg/?v=10&encoding=json");
+		curl_easy_setopt(curl, CURLOPT_USERAGENT, wstring_to_utf8(getUserAgent()).c_str());
 		curl_easy_setopt(curl, CURLOPT_OPENSOCKETFUNCTION, my_opensocketfunc);
 		curl_easy_setopt(curl, CURLOPT_CAINFO, "cacert.pem");
-		curl_easy_setopt(curl, CURLOPT_WS_OPTIONS, CURLWS_RAW_MODE);
-		//curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, my_func);
-		curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, cb);
+		curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, websocketCallback);
 		CURLcode res = curl_easy_perform(curl);
 		std::string r = "Websocket transfer #1 complete. CURLcode was ";
 		r += curl_easy_strerror(res);
@@ -631,6 +734,36 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 		curl_easy_cleanup(curl);
 		logFile.close();
 	}
+	MessageBoxA(NULL, "Exiting WebSocket thread", "", MB_OK);
+}
+
+//Continuously send heartbeats to keep the connection open
+void heartbeatThread(void* param) {
+	stringstream heartbeatObject;
+	size_t sent;
+	int seconds;
+	while (!shouldStopHeartbeats) {
+		//Send the heartbeat immediately the first time
+		//The official documentation says,
+		//"Upon receiving the Hello event, your app should wait heartbeat_interval * jitter where jitter is any random value between 0 and 1, then send its first Heartbeat (opcode 1) event."
+		seconds = heartbeat_interval / 1000;
+		heartbeatObject.str(string());
+		heartbeatObject.clear();
+		heartbeatObject << "{\"op\":1,\"d\":";
+		if (heartbeat_d >= 0) {
+			heartbeatObject << heartbeat_d;
+		} else {
+			heartbeatObject << "null";
+		}
+		heartbeatObject << "}";
+		curl_ws_send(curl, heartbeatObject.str().c_str(), heartbeatObject.str().length(), &sent, 4096, CURLWS_TEXT);
+		for (int i = 0; i < seconds && !shouldStopHeartbeats; i++) Sleep(1000);
+	}
+}
+
+int /*WINAPI WinM*/main(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
+	memset(emojiIsLoaded, 0, (EMOJI_COUNT / 8) + ((EMOJI_COUNT % 8) != 0 ? 1 : 0));
+	_beginthread(websocketThread, 0, NULL);
 	
 	//Initialize the config struct
 	config.authToken = L"";
@@ -3210,7 +3343,7 @@ bool CALLBACK SetFont(HWND child, LPARAM font){
 
 wstring getUserAgent() {
 	//Build the user-agent string
-	//We want to do it here instead of during startup because doesn't support Windows 2000.
+	//We want to do it here instead of during startup because it doesn't support Windows 2000.
 	DWORD windowsVersion = GetVersion();
 	DWORD majorVersion, minorVersion;
 	majorVersion = (DWORD)(LOBYTE(LOWORD(windowsVersion)));
