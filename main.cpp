@@ -71,10 +71,10 @@ wstring getUserNameWithDiscriminator(uint64_t id);
 Gdiplus::Bitmap* getUserAvatar(uint64_t id);
 void submitMessage();
 void recalculateTotalMessageHeight(bool);
-unsigned int DrawTextWithColorEmojis(HDC, unsigned int, unsigned int, unsigned int, bool, unsigned char*, unsigned int, bool, SIZE*);
+unsigned int DrawTextWithColorEmojis(HDC, Gdiplus::Graphics*, unsigned int, unsigned int, unsigned int, bool, unsigned char*, unsigned int, bool, SIZE*);
 int UTF8ToCodepoint(unsigned char*, unsigned int*, unsigned int);
 int UTF8CodepointIsEmoji(int);
-void drawEmoji(HDC, unsigned char*, int, unsigned int, unsigned int, unsigned int);
+void drawEmoji(Gdiplus::Graphics *GDIPlusOutputObject, int, unsigned int, unsigned int, unsigned int);
 int ReadEmoji(unsigned char*, unsigned int*, unsigned int);
 unsigned int GetMaxTextLengthForPixelWidth(HDC, unsigned int, wstring, unsigned int*);
 void loadBitmaps();
@@ -1651,6 +1651,8 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 		case WM_PAINT:
 			{
 				hdc = BeginPaint(wnd, &ps);
+				Gdiplus::Graphics GDIPlusOutputObject(hdc);
+				GDIPlusOutputObject.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
 				originalGDIObj = SelectObject(hdc, GetStockObject(DC_PEN));
 				
 				RECT r;
@@ -1675,7 +1677,7 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 					textRect.right = 18 + 182 + 15;
 					//ExtTextOut(hdc, 18, 19, NULL, NULL, selectedServerName.c_str(), selectedServerName/*str*/.length(), NULL);
 					//DrawText(hdc, selectedServerName.c_str(), selectedServerName.length(), &textRect, DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
-					DrawTextWithColorEmojis(hdc, textRect.left, textRect.top, (textRect.right - textRect.left), false, (unsigned char*)selectedServerName.c_str(), selectedServerName.length(), false, NULL);
+					DrawTextWithColorEmojis(hdc, &GDIPlusOutputObject, textRect.left, textRect.top, (textRect.right - textRect.left), false, (unsigned char*)selectedServerName.c_str(), selectedServerName.length(), false, NULL);
 					
 					//Draw the line under the server name
 					SetDCPenColor(hdc, RGB(37,37,39));
@@ -1740,7 +1742,7 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 							Rectangle(hdc, 0, (idx * 32) + 50, 232, (idx * 32) + 50 + 32 + 32);
 							
 							//ExtTextOut(hdc, 12, (idx * 32) + 50 + 7 + 8, NULL, NULL, pData->dataModel.at(i).name.c_str(), pData->dataModel.at(i).name.length(), NULL);
-							DrawTextWithColorEmojis(hdc, 12, (idx * 32) + 50 + 7 + 8, 223, false, (unsigned char*)pData->dataModel.at(i).name.c_str(), pData->dataModel.at(i).name.length(), false, NULL);
+							DrawTextWithColorEmojis(hdc, &GDIPlusOutputObject, 12, (idx * 32) + 50 + 7 + 8, 223, false, (unsigned char*)pData->dataModel.at(i).name.c_str(), pData->dataModel.at(i).name.length(), false, NULL);
 							
 							//Draw the sideways or down-facing arrow beside the channel group
 							if (pData->dataModel.at(i).IsExpanded) {
@@ -1804,7 +1806,7 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 							}
 							
 							//ExtTextOut(hdc, 42, (idx * 32) + 50 + 7, NULL, NULL, pData->dataModel.at(i).channels.at(j).name.c_str(), pData->dataModel.at(i).channels.at(j).name.length(), NULL);
-							DrawTextWithColorEmojis(hdc, 42, (idx * 32) + 50 + 7, 178, false, (unsigned char*)pData->dataModel.at(i).channels.at(j).name.c_str(), pData->dataModel.at(i).channels.at(j).name.length(), false, NULL);
+							DrawTextWithColorEmojis(hdc, &GDIPlusOutputObject, 42, (idx * 32) + 50 + 7, 178, false, (unsigned char*)pData->dataModel.at(i).channels.at(j).name.c_str(), pData->dataModel.at(i).channels.at(j).name.length(), false, NULL);
 
 							//Draw the channel icon
 							/*hBmpChannelPoundSign;
@@ -2989,7 +2991,7 @@ LRESULT CALLBACK contentAreaProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 					SetTextColor(hdc, it->deleted ? deletedMessageTextColor : messageTextColor);
 					SelectObject(hdc, smallInfoFont);
 					//DrawText(hdc, it->text.c_str(), it->text.length(), &textRect, DT_WORDBREAK | DT_EDITCONTROL);
-					DrawTextWithColorEmojis(hdc, textRect.left, textRect.top, (textRect.right - textRect.left), true, (unsigned char*)it->text.c_str(), it->text.length(), false, NULL);
+					DrawTextWithColorEmojis(hdc, &GDIPlusOutputObject, textRect.left, textRect.top, (textRect.right - textRect.left), true, (unsigned char*)it->text.c_str(), it->text.length(), false, NULL);
 					
 					//Don't bother drawing anything else if the current message is at the top.
 					if (textY < 48) break;
@@ -3012,6 +3014,7 @@ LRESULT CALLBACK contentAreaProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 							delete gp;
 						}
 						GDIPlusOutputObject.DrawImage(userIcon, dest);
+						GDIPlusOutputObject.ResetClip();
 					}
 				}
 				
@@ -3033,10 +3036,10 @@ LRESULT CALLBACK contentAreaProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 				textRect.bottom = 35;
 				textRect.right = (width - 15) - 225;
 				//DrawText(hdc, selectedChannelName.c_str(), selectedChannelName.length(), &textRect, DT_SINGLELINE | DT_WORDBREAK | DT_NOPREFIX | DT_END_ELLIPSIS | DT_CALCRECT);
-				DrawTextWithColorEmojis(hdc, textRect.left, textRect.top, (textRect.right - textRect.left), false, (unsigned char*)selectedChannelName.c_str(), selectedChannelName.length(), true, &textSize);
+				DrawTextWithColorEmojis(hdc, &GDIPlusOutputObject, textRect.left, textRect.top, (textRect.right - textRect.left), false, (unsigned char*)selectedChannelName.c_str(), selectedChannelName.length(), true, &textSize);
 				channelHeaderX += textSize.cx/*(textRect.right - textRect.left)*/ + 16;
 				//DrawText(hdc, selectedChannelName.c_str(), selectedChannelName.length(), &textRect, DT_SINGLELINE | DT_WORDBREAK | DT_NOPREFIX | DT_END_ELLIPSIS);
-				DrawTextWithColorEmojis(hdc, textRect.left, textRect.top, (textRect.right - textRect.left), false, (unsigned char*)selectedChannelName.c_str(), selectedChannelName.length(), false, NULL);
+				DrawTextWithColorEmojis(hdc, &GDIPlusOutputObject, textRect.left, textRect.top, (textRect.right - textRect.left), false, (unsigned char*)selectedChannelName.c_str(), selectedChannelName.length(), false, NULL);
 				//Draw the 24-pixel vertical gray line after the channel name
 				SetDCPenColor(hdc, RGB(66,69,74));
 				MoveToEx(hdc, channelHeaderX, 12, NULL);
@@ -3240,7 +3243,7 @@ unsigned int getMessageHeight(unsigned int width, string message) {
 	textRect.right = width;*/
 	SIZE sz;
 	//DrawText(tempHDC, message.c_str(), message.length(), &textRect, DT_WORDBREAK | DT_EDITCONTROL | DT_CALCRECT);
-	DrawTextWithColorEmojis(tempHDC, 0, 0, width, true, (unsigned char*)message.c_str(), message.length(), true, &sz);
+	DrawTextWithColorEmojis(tempHDC, NULL, 0, 0, width, true, (unsigned char*)message.c_str(), message.length(), true, &sz);
 	
 	unsigned int height = sz.cy;//textRect.bottom - textRect.top;
 	if (height < 40) height = 40;
@@ -3585,7 +3588,7 @@ void recalculateTotalMessageHeight(bool addLastMessageHeight) {
 	InvalidateRect(hwndContentArea, NULL, FALSE);
 }
 
-unsigned int DrawTextWithColorEmojis(HDC hdc, unsigned int x, unsigned int y, unsigned int width, /*TODO: height*/ bool multiline, unsigned char *string, unsigned int bytes, bool calculateOnly, SIZE *textSize) {
+unsigned int DrawTextWithColorEmojis(HDC hdc, Gdiplus::Graphics *GDIPlusOutputObject, unsigned int x, unsigned int y, unsigned int width, /*TODO: height*/ bool multiline, unsigned char *string, unsigned int bytes, bool calculateOnly, SIZE *textSize) {
 	//wstring_convert<codecvt_utf8<wchar_t>> cv;
 	wstring tmp;
 	unsigned char *ptr = string;
@@ -3641,7 +3644,7 @@ unsigned int DrawTextWithColorEmojis(HDC hdc, unsigned int x, unsigned int y, un
 					//Draw the emoji
 					//drawEmoji(HDC hdc, unsigned char *ptr, int initialEmojiIdx, unsigned int x, unsigned int y, unsigned int size, unsigned int *charSizeInBytes, unsigned int maxBytes)
 					//if (shouldAdd4PxSpacing) relativeX += 4;
-					if (!calculateOnly) drawEmoji(hdc, ptr, isEmoji, x + relativeX, y, lineHeight);
+					if (!calculateOnly) drawEmoji(GDIPlusOutputObject, isEmoji, x + relativeX, y, lineHeight);
 					//ptr += charSizeInBytes;
 					relativeX += lineHeight;
 					shouldAdd4PxSpacing = true;
@@ -3854,7 +3857,7 @@ unsigned int DrawTextWithColorEmojis(HDC hdc, unsigned int x, unsigned int y, un
 					y += lineHeight;
 					totalHeight += lineHeight;
 				}
-				if (!calculateOnly) drawEmoji(hdc, ptr, isEmoji, x + relativeX, y, lineHeight);
+				if (!calculateOnly) drawEmoji(GDIPlusOutputObject, isEmoji, x + relativeX, y, lineHeight);
 				relativeX += lineHeight;
 				lineStart = false;
 			} else {
@@ -4169,18 +4172,17 @@ int UTF8ToCodepoint(unsigned char* byteArray, unsigned int *charLength, unsigned
 	return retVal;
 }
 
-void drawEmoji(HDC hdc, unsigned char *ptr, int emojiIdx, unsigned int x, unsigned int y, unsigned int size) {
+void drawEmoji(Gdiplus::Graphics *GDIPlusOutputObject, int emojiIdx, unsigned int x, unsigned int y, unsigned int size) {
 	bool emojiIsInMemory = emojiIsLoaded[emojiIdx / 8] & (1 << (7 - (emojiIdx % 8)));
 	if (!emojiIsInMemory) {
 		string filename = ".\\img\\emojis\\";
 		filename += emojiFilenames[emojiIdx];
 		filename += ".png";
-		Gdiplus::Bitmap bmp(utf8_to_wstring(filename).c_str(), false);
-		bmp.GetHBITMAP(RGB(54,57,63), &emojiBitmaps[emojiIdx]);
+		emojiBitmaps[emojiIdx] = new Gdiplus::Bitmap(utf8_to_wstring(filename).c_str(), false);
 		emojiIsLoaded[emojiIdx / 8] |= (1 << (7 - (emojiIdx % 8)));
 	}
-	SelectObject(tempHDC, emojiBitmaps[emojiIdx]);
-	StretchBlt(hdc, x, y, size, size, tempHDC, 0, 0, 72, 72, SRCCOPY);
+	Gdiplus::Rect emojiRect(x, y, size, size);
+	GDIPlusOutputObject->DrawImage(emojiBitmaps[emojiIdx], emojiRect);
 }
 
 unsigned int GetMaxTextLengthForPixelWidth(HDC hdc, unsigned int width, wstring str, unsigned int *outputWidth) {

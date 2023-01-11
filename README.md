@@ -25,5 +25,4 @@ This project is compiled with version 7.1 of the Windows SDK.
 5. The result will be a file called talk32.exe
 
 #### Known issues
-- Emojis are shown in low color
-- Random painting issues on Windows XP
+- Random painting issues
