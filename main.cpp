@@ -68,7 +68,7 @@ void copyText(string text);
 void copyUnicodeText(wstring text);
 wstring getUserName(uint64_t id);
 wstring getUserNameWithDiscriminator(uint64_t id);
-HBITMAP getUserAvatar(uint64_t id);
+Gdiplus::Bitmap* getUserAvatar(uint64_t id);
 void submitMessage();
 void recalculateTotalMessageHeight(bool);
 unsigned int DrawTextWithColorEmojis(HDC, unsigned int, unsigned int, unsigned int, bool, unsigned char*, unsigned int, bool, SIZE*);
@@ -273,7 +273,7 @@ struct User {
 	wstring name;
 	uint64_t discriminator;
 	uint64_t id;
-	HBITMAP hbmIcon;
+	Gdiplus::Bitmap* hbmIcon;
 };
 
 vector<ServerListItem> globalServerIconList;
@@ -844,7 +844,7 @@ int initializeTables(sqlite3 *db) {
 
 int /*WINAPI WinM*/main(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
 	memset(emojiIsLoaded, 0, (EMOJI_COUNT / 8) + ((EMOJI_COUNT % 8) != 0 ? 1 : 0));
-	_beginthread(websocketThread, 0, NULL);
+	//_beginthread(websocketThread, 0, NULL);
 	
 	/*sqlite3 *db;
 	int rc = sqlite3_open("test.db", &db);
@@ -1380,8 +1380,7 @@ bool login(bool clearAuthPage, bool offlineMode) {
 				//Get the avatar
 				if (user.HasMember("avatar") && user["avatar"].IsString()) {
 					iconFilename = cacheDir + L"\\users\\" + to_wstring(u.id) + L"\\" + utf8_to_wstring(user["avatar"].GetString());
-					Gdiplus::Bitmap bmp(iconFilename.c_str(), false);
-					bmp.GetHBITMAP(serverListBG, &u.hbmIcon);
+					u.hbmIcon = new Gdiplus::Bitmap(iconFilename.c_str(), false);
 				} else {
 					u.hbmIcon = NULL;
 				}
@@ -2920,7 +2919,10 @@ LRESULT CALLBACK contentAreaProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 				int height = r.bottom - r.top;
 				HDC iconHDC;
 				BITMAP bmp;
-				HBITMAP userIcon;
+				Gdiplus::Bitmap *userIcon;
+				Gdiplus::Graphics GDIPlusOutputObject(hdc);
+				GDIPlusOutputObject.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+				Gdiplus::ImageAttributes attrs;
 				iconHDC = CreateCompatibleDC(hdc);
 
 				//Set up the font
@@ -2981,6 +2983,7 @@ LRESULT CALLBACK contentAreaProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 				wstring debugStr = L"content height=" + to_wstring((long long)pData->totalContentHeight) + L", scrollPos=" + to_wstring((long long)pData->scrollPos);
 				//MessageBox(NULL, debugStr.c_str(), L"", MB_OK);
 				bool addOnce = false;
+				Gdiplus::Rect avatarRect;
 				for (auto it = pData->messages.begin(); it != pData->messages.end(); it++) {
 					if (pixelsToAdd > 250/*65*/) { //Using 250 instead of 65 prevents taller messages from disappearing when scrolling up. This number might need to be higher for taller messages so it would be best to use a formula instead
 						pixelsToAdd -= it->messageHeight;
@@ -3018,11 +3021,14 @@ LRESULT CALLBACK contentAreaProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 					//Draw the avatar
 					userIcon = getUserAvatar(it->authorID);
 					if (userIcon) {
-						SelectObject(iconHDC, userIcon);
-						GetObject(userIcon, sizeof(bmp), &bmp);
-						StretchBlt(maskedIconDC, 0, 0, 40, 40, iconHDC, 0, 0, bmp.bmWidth, bmp.bmHeight, SRCCOPY);
-						if (config.roundUserAvatars) BitBlt(maskedIconDC, 0, 0, 48, 48, maskDC, 0, 0, SRCAND);
-						BitBlt(hdc, 16, textY - 1, 40, 40, maskedIconDC, 0, 0, SRCPAINT);
+						Gdiplus::Rect dest(16, (textY - 1), 40, 40);
+						if (config.roundUserAvatars) {
+							Gdiplus::GraphicsPath *gp = new Gdiplus::GraphicsPath();
+							gp->AddEllipse(16, (textY - 1), 40, 40);
+							GDIPlusOutputObject.SetClip(gp);
+							delete gp;
+						}
+						GDIPlusOutputObject.DrawImage(userIcon, dest);
 					}
 				}
 				
@@ -3527,7 +3533,7 @@ wstring getUserNameWithDiscriminator(uint64_t id) {
 	return L"Unknown user " + to_wstring((long long)id);
 }
 
-HBITMAP getUserAvatar(uint64_t id) {
+Gdiplus::Bitmap* getUserAvatar(uint64_t id) {
 	for (unsigned int i = 0; i < globalUserList.size(); i++) {
 		if (globalUserList.at(i).id == id) return globalUserList.at(i).hbmIcon;
 	}
