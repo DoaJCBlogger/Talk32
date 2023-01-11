@@ -25,6 +25,5 @@ This project is compiled with version 7.1 of the Windows SDK.
 5. The result will be a file called talk32.exe
 
 #### Known issues
-- Doesn't connect to Discord yet
 - Server icons and user avatars are shown in low color
 - Sometimes the server name in the left sidebar disappears on Windows XP

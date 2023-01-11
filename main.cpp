@@ -51,6 +51,8 @@ using namespace rapidjson;
 #define CURL_STATICLIB
 #include "libcurl\include\curl\curl.h"
 
+#include "sqlite\sqlite3.h"
+
 #include "emoji.h"
 
 LRESULT CALLBACK leftSidebarProc(HWND, UINT, WPARAM, LPARAM);
@@ -102,6 +104,7 @@ unsigned int GetMaxTextLengthForPixelWidth(HDC, unsigned int, wstring, unsigned 
 #define IDM_VOICE_CHANNEL_COPY_ID 21
 #define IDM_CHANNEL_GROUP_COLLAPSE_UNREAD 22
 #define IDM_COPY_SERVER_ID 23
+#define IDM_SETTINGS_LOGGING 24
 
 #define IDC_AUTHTOKENFIELD 7
 #define IDC_MESSAGEFIELD 8
@@ -114,7 +117,7 @@ unsigned int GetMaxTextLengthForPixelWidth(HDC, unsigned int, wstring, unsigned 
 #define DISCORD_MAX_CHARACTERS 2000
 #define MESSAGE_SPACING 20
 
-const wstring versionString = L"Talk32 v0.1";
+const wstring versionString = L"Talk32 (https://github.com/DoaJCBlogger/Talk32, 0.1)";
 
 enum Page {LoginPage, MainPage};
 
@@ -123,11 +126,20 @@ enum MainPageSubLocation {Channel, Friends, DM, GroupDM, Explore};
 Page location = LoginPage;
 MainPageSubLocation sublocation = Friends;
 unsigned long long selectedServer = -1;
-unsigned long long selectedChannel = -1;
+uint64_t selectedChannel = 1052421969297018910;//-1;
 unsigned int selectedChannelGroupIdx = 0;
 unsigned int selectedChannelIdxWithinGroup = 0;
 string selectedServerName = "";
 string selectedChannelName = "";
+
+struct LoggingServer {
+	bool enabled;
+	uint64_t id;
+	wstring name;
+	wstring filename;
+	sqlite3 *db;
+	LoggingServer():enabled(true),id(0),name(L""),filename(L""){}
+};
 
 struct ConfigObj {
 	wstring authToken;
@@ -139,6 +151,7 @@ struct ConfigObj {
 	unsigned int windowY;
 	unsigned int windowWidth;
 	unsigned int windowHeight;
+	vector<LoggingServer> loggingServers;
 };
 
 ConfigObj config;
@@ -207,6 +220,7 @@ COLORREF discordBlueBtnDownColor = RGB(91, 110, 174);
 COLORREF channelColor = RGB(142, 146, 151);
 COLORREF contentAreaHeaderBGColor = RGB(56, 57, 59);
 COLORREF messageTextColor = RGB(220, 221, 222);
+COLORREF deletedMessageTextColor = RGB(237, 66, 69);
 wstring localAppDataPath;
 wstring configFilePath;
 
@@ -291,6 +305,7 @@ struct Message {
 	unsigned long long authorID;
 	int messageHeight;
 	string text;
+	bool deleted;
 };
 
 struct ContentAreaData {
@@ -305,6 +320,17 @@ struct ContentAreaData {
 };
 
 const string opcodes[] = {"Dispatch", "Heartbeat", "Identify", "Presence Update", "Voice State Update", "", "Resume", "Reconnect", "Request Guild Members", "Invalid Session", "Hello", "Heartbeat ACK"};
+
+const char* tableNames[7] = {"messages", "attachments", "embeds", "users", "server", "channels", "categories"};
+const char* createTableQueries[7] = {
+	"CREATE TABLE IF NOT EXISTS \"messages\" (\"ID\" BIGINT NOT NULL,\"channelID\" INTEGER,\"content\" TEXT,\"messageType\" TEXT,\"timestamp\" TEXT,\"timestampEdited\" TEXT,\"authorID\" INTEGER,\"pinned\" INTEGER, \"deleted\" INTEGER, PRIMARY KEY(\"ID\", \"channelID\", \"timestampEdited\"));",
+	"CREATE TABLE IF NOT EXISTS \"attachments\" (\"ID\" INTEGER UNIQUE,\"messageID\" INTEGER,\"idx\" INTEGER,\"filename\" TEXT,\"url\" TEXT,\"filesize\" INTEGER, \"deleted\" INTEGER, PRIMARY KEY(\"ID\",\"messageID\"));",
+	"CREATE TABLE IF NOT EXISTS \"embeds\" (\"messageID\" TEXT,\"title\" TEXT,\"url\" TEXT,\"description\" TEXT,\"author\" TEXT,\"authorUrl\" TEXT,\"authorIconUrl\" TEXT,\"idx\" INTEGER,\"thumbnailUrl\" TEXT,PRIMARY KEY(\"messageID\",\"idx\"));",
+	"CREATE TABLE IF NOT EXISTS \"users\" (\"ID\" TEXT,\"name\" TEXT,\"discriminator\" INTEGER,\"isBot\" INTEGER,\"avatarUrl\" TEXT,\"date\" TEXT,PRIMARY KEY(\"ID\",\"name\",\"discriminator\",\"avatarUrl\"));",
+	"CREATE TABLE IF NOT EXISTS \"server\" (\"ID\" BIGINT NOT NULL,\"name\" TEXT,\"iconUrl\" TEXT,\"date\" TEXT,PRIMARY KEY(\"ID\",\"name\",\"iconUrl\"));",
+	"CREATE TABLE IF NOT EXISTS \"channels\" (\"ID\" BIGINT NOT NULL,\"type\" TEXT,\"categoryID\" BIGINT,\"name\" TEXT,\"topic\" TEXT,\"date\" TEXT,PRIMARY KEY(\"ID\",\"categoryID\",\"name\",\"topic\"));",
+	"CREATE TABLE IF NOT EXISTS \"categories\" (\"ID\" BIGINT NOT NULL,\"name\" TEXT,\"date\" TEXT,PRIMARY KEY(\"ID\",\"name\"));"
+};
 
 void heartbeatThread(void* param);
 
@@ -518,12 +544,29 @@ bool loadOrCreateConfig() {
 		}
 
 		configFile.close();
+		
+		//Logging servers
+		iter = configDocument.FindMember("logging_servers");
+		if (iter != configDocument.MemberEnd() && configDocument["logging_servers"].IsArray()) {
+			Value& loggingServerArray = configDocument["logging_servers"];
+			long long arraySize = loggingServerArray.Size();
+			
+			for (int i = 0; i < arraySize; i++) {
+				LoggingServer ls;
+				ls.id = configDocument["logging_servers"][i]["id"].GetUint64();
+				ls.name = utf8_to_wstring(configDocument["logging_servers"][i]["name"].GetString());
+				ls.filename = utf8_to_wstring(configDocument["logging_servers"][i]["filename"].GetString());
+				//cout << endl << ls.id << ", " << wstring_to_utf8(ls.name) << ", " << wstring_to_utf8(ls.filename);
+				config.loggingServers.push_back(ls);
+			}
+		}
 	}
 
 	return true;
 }
 
 void saveConfig() {
+	return;
 	TCHAR szPath[MAX_PATH];
 	if (!SUCCEEDED(SHGetFolderPath(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, szPath))) {
 		MessageBox(NULL, L"Error: could not call SHGetFolderPath for the local appdata folder.", L"Error", MB_OK | MB_ICONERROR);
@@ -559,6 +602,18 @@ void saveConfig() {
 	windowPos.PushBack(config.windowHeight, allocator2);
 
 	d.AddMember(L"window_pos", windowPos, allocator2);
+	
+	GenericValue<UTF16<> > loggingServers(kArrayType);
+	for (auto ls = begin(config.loggingServers); ls != end(config.loggingServers); ++ls) {
+		GenericDocument<UTF16<> > loggingServer;
+		loggingServer.SetObject();
+		Document::AllocatorType& allocator3 = loggingServer.GetAllocator();
+		loggingServer.AddMember(L"id", ls->id, allocator3);
+		loggingServer.AddMember(L"name", StringRef(ls->name), allocator3);
+		loggingServer.AddMember(L"filename", StringRef(ls->filename), allocator3);
+		loggingServers.PushBack(loggingServer, allocator3);
+	}
+	d.AddMember(L"logging_servers", loggingServers, allocator);
 
 	StringBuffer strbuf;
 	rapidjson::Writer< StringBuffer, UTF16<> > writer(strbuf);
@@ -588,10 +643,6 @@ curl_socket_t my_opensocketfunc(void *clientp, curlsocktype purpose, struct curl
 	return sock=socket(address->family, address->socktype, address->protocol);
 }
 
-struct memory {
-   char *response;
-   size_t size;
-};
 ofstream logFile;
 int heartbeat_interval = 30000;
 int heartbeat_d = -1;
@@ -660,18 +711,34 @@ static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *use
 	if (iter != responseJSON.MemberEnd()) {
 		switch(op) {
 			case 0: //Dispatch
-				//This includes things like READY and MESSAGE_CREATE
-				t = responseJSON["t"].GetString();
-				if (t.compare("READY") == 0) {
-					//Save "resume_gateway_url" and "session_id" so we can resume if we get disconnected
-					APIIsLoggedIn = true;
-					resume_gateway_url = responseJSON["d"]["resume_gateway_url"].GetString();
-					session_id = responseJSON["d"]["session_id"].GetString();
-					cout << endl << "resume_gateway_url=" << resume_gateway_url;
-					cout << endl << "session_id" << session_id;
-				} else if (t.compare("MESSAGE_CREATE") == 0) {
-					cout << endl << "MESSAGE_CREATE: \"" << responseJSON["d"]["content"].GetString() << "\"";
-					break;
+				{
+					//This includes things like READY and MESSAGE_CREATE
+					t = responseJSON["t"].GetString();
+					if (t.compare("READY") == 0) {
+						//Save "resume_gateway_url" and "session_id" so we can resume if we get disconnected
+						APIIsLoggedIn = true;
+						resume_gateway_url = responseJSON["d"]["resume_gateway_url"].GetString();
+						session_id = responseJSON["d"]["session_id"].GetString();
+						cout << endl << "resume_gateway_url=" << resume_gateway_url;
+						cout << endl << "session_id" << session_id;
+					} else if (t.compare("MESSAGE_CREATE") == 0) {
+						cout << endl << "MESSAGE_CREATE: \"" << responseJSON["d"]["content"].GetString() << "\"";
+						if (stoll(responseJSON["d"]["channel_id"].GetString()) == selectedChannel) {
+							//Add the message to the content area if it's for the currently selected channel
+							//We're going to assume that channel ID's are globally unique even between servers
+							Message m;
+							m.id = stoll(responseJSON["d"]["id"].GetString());
+							m.authorID = stoll(responseJSON["d"]["author"]["id"].GetString());
+							m.text = responseJSON["d"]["content"].GetString();
+							m.deleted = false;
+							cout << endl << "m.id=" << m.id << ", m.authorID=" << m.authorID << ", m.text=\"" << m.text << "\", m.deleted=" << m.deleted;
+							globalContentAreaData->messages.insert(globalContentAreaData->messages.begin(), m);
+							recalculateTotalMessageHeight(true);
+						} else {
+							//If the message wasn't for the currently selected channel, then we should mark the channel as unread
+						}
+						break;
+					}
 				}
 				break;
 			case 1: //Heartbeat
@@ -717,22 +784,23 @@ void websocketThread(void* param) {
 	//struct curl_slist *slist=NULL;
 	if (curl) {
 		cout << endl << "Curl initialization worked.";
-		logFile = ofstream("C:\\users\\777\\documents\\curl.log", ios::binary);
+		/*logFile = ofstream("C:\\users\\777\\documents\\curl.log", ios::binary);
 		if (!logFile) {
 			MessageBox(NULL, L"Could not open log file", L"Error", MB_OK | MB_ICONERROR);
-		}
+		}*/
 		
 		curl_easy_setopt(curl, CURLOPT_URL, "wss://gateway.discord.gg/?v=10&encoding=json");
 		curl_easy_setopt(curl, CURLOPT_USERAGENT, wstring_to_utf8(getUserAgent()).c_str());
 		curl_easy_setopt(curl, CURLOPT_OPENSOCKETFUNCTION, my_opensocketfunc);
 		curl_easy_setopt(curl, CURLOPT_CAINFO, "cacert.pem");
+		curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
 		curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, websocketCallback);
 		CURLcode res = curl_easy_perform(curl);
 		std::string r = "Websocket transfer #1 complete. CURLcode was ";
 		r += curl_easy_strerror(res);
 		MessageBoxA(NULL, r.c_str(), "", MB_OK);
 		curl_easy_cleanup(curl);
-		logFile.close();
+		//logFile.close();
 	}
 	MessageBoxA(NULL, "Exiting WebSocket thread", "", MB_OK);
 }
@@ -761,9 +829,31 @@ void heartbeatThread(void* param) {
 	}
 }
 
+static int sqlite3Callback(void *unused, int argc, char **argv, char **azColName) {return 0;}
+
+int initializeTables(sqlite3 *db) {
+	char *zErrMsg = 0;
+	int rc;
+	
+	for (int i = 0; i < 7; i++) {
+		rc = sqlite3_exec(db, createTableQueries[i], sqlite3Callback, 0, &zErrMsg);
+		if (rc != SQLITE_OK) {cout << endl << "Error while creating table \"" << tableNames[i] << "\": " << zErrMsg; return 1;}
+	}
+	return 0;
+}
+
 int /*WINAPI WinM*/main(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
 	memset(emojiIsLoaded, 0, (EMOJI_COUNT / 8) + ((EMOJI_COUNT % 8) != 0 ? 1 : 0));
 	_beginthread(websocketThread, 0, NULL);
+	
+	/*sqlite3 *db;
+	int rc = sqlite3_open("test.db", &db);
+	if (rc) {
+		cout << endl << "Error while opening database: " << sqlite3_errmsg(db);
+	} else {
+		initializeTables(db);
+	}
+	sqlite3_close(db);*/
 	
 	//Initialize the config struct
 	config.authToken = L"";
@@ -1073,6 +1163,12 @@ LRESULT CALLBACK WndProc( HWND hwndMainWin, UINT msg, WPARAM wParam, LPARAM lPar
 				break;
 				
 				case IDM_USER_PROFILE:
+				break;
+				
+				case IDM_SETTINGS_LOGGING:
+					{
+						
+					}
 				break;
 				
 				case IDM_HELP_USERGUIDE:
@@ -2715,6 +2811,13 @@ LRESULT CALLBACK contentAreaProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 				Message m;
 				m.messageHeight = -1;
 				
+				m.authorID = 336697008356327444;
+				m.id = 1;
+				m.text = 1061838579795505162;
+				m.deleted = false;
+				m.text = "Hello from Ripcord to Talk32 on Windows XP.";
+				pData->messages.push_back(m);
+				
 				m.authorID = 115110682399080453;
 				m.id = 826573208504369182;
 				m.text = "hiii 👋";
@@ -2897,7 +3000,7 @@ LRESULT CALLBACK contentAreaProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 					textRect.bottom = textY + messageHeight;
 					
 					//Draw the text
-					SetTextColor(hdc, messageTextColor);
+					SetTextColor(hdc, it->deleted ? deletedMessageTextColor : messageTextColor);
 					SelectObject(hdc, smallInfoFont);
 					//DrawText(hdc, it->text.c_str(), it->text.length(), &textRect, DT_WORDBREAK | DT_EDITCONTROL);
 					DrawTextWithColorEmojis(hdc, textRect.left, textRect.top, (textRect.right - textRect.left), true, (unsigned char*)it->text.c_str(), it->text.length(), false, NULL);
@@ -3311,15 +3414,19 @@ bool RoundRectWidthHeight(HDC hdc, int x, int y, int w, int h, int rw, int rh) {
 void AddMenus(HWND hwndMainWin) {
 	HMENU hMenuBar = CreateMenu();
 	HMENU hUserMenu = CreateMenu();
+	HMENU hSettingsMenu = CreateMenu();
 	HMENU hHelpMenu = CreateMenu();
 	
 	AppendMenuW(hUserMenu, MF_STRING, IDM_USER_LOGIN, L"Log in");
 	AppendMenuW(hUserMenu, MF_STRING, IDM_USER_LOGOUT, L"Log out");
 	AppendMenuW(hUserMenu, MF_STRING, IDM_USER_PROFILE, L"User profile");
 	
+	AppendMenuW(hSettingsMenu, MF_STRING, IDM_SETTINGS_LOGGING, L"Logging");
+	
 	AppendMenuW(hHelpMenu, MF_STRING, IDM_HELP_USERGUIDE, L"User Guide");
 	
 	AppendMenuW(hMenuBar, MF_POPUP, (UINT_PTR)hUserMenu, L"User");
+	AppendMenuW(hMenuBar, MF_POPUP, (UINT_PTR)hSettingsMenu, L"Settings");
 	AppendMenuW(hMenuBar, MF_POPUP, (UINT_PTR)hHelpMenu, L"Help");
 	SetMenu(hwndMainWin, hMenuBar);
 }
@@ -3434,12 +3541,17 @@ void submitMessage() {
 		return;
 	}
 	
-	Message m;
-	m.authorID = 580427633351720961;
-	m.id = 0;
-	m.text = wstring_to_utf8(wstring(buffer));
-	globalContentAreaData->messages.insert(globalContentAreaData->messages.begin(), m);
-	recalculateTotalMessageHeight(true);
+	GenericDocument<UTF8<> > d;
+	d.SetObject();
+	Document::AllocatorType& allocator = d.GetAllocator();
+	d.AddMember("content", StringRef(wstring_to_utf8(wstring(buffer)).c_str()), allocator);
+	StringBuffer strbuf;
+	rapidjson::Writer< StringBuffer, UTF8<> > writer(strbuf);
+	d.Accept(writer);
+	string json = strbuf.GetString();
+	
+	
+	
 	//RedrawWindow(hwndContentArea, NULL, NULL, NULL);
 	//InvalidateRect(hwndContentArea, NULL, true);
 	
