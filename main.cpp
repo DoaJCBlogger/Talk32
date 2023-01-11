@@ -77,6 +77,10 @@ int UTF8CodepointIsEmoji(int);
 void drawEmoji(HDC, unsigned char*, int, unsigned int, unsigned int, unsigned int);
 int ReadEmoji(unsigned char*, unsigned int*, unsigned int);
 unsigned int GetMaxTextLengthForPixelWidth(HDC, unsigned int, wstring, unsigned int*);
+void loadBitmaps();
+void deleteBitmaps();
+void drawServerIcon(HDC hdc, Gdiplus::Bitmap* icon, int x, int y, int roundStyle /* 0=none, 1=round, 2=hover*/);
+void GetRoundRectPath(Gdiplus::GraphicsPath *pPath, Gdiplus::Rect r, int dia);
 
 //Contains a font fix provided by "Christopher Janzon" on stackoverflow.com
 //https://stackoverflow.com/a/17075471
@@ -174,7 +178,7 @@ bool BearerTokenIsValid = false;
 SYSTEMTIME BearerTokenCreatedTime = {0};
 SYSTEMTIME LastRequestTime = {0};
 
-HBITMAP hBmpHomeIcon;
+Gdiplus::Bitmap *hBmpHomeIcon;
 HBITMAP hBmpExploreIcon;
 HBITMAP hBmpChannelPoundSign;
 HBITMAP hBmpChannelPoundSignLocked;
@@ -238,7 +242,7 @@ struct ServerListItem {
 	string name;
 	uint64_t id;
 	bool unread;
-	HBITMAP hbmIcon;
+	Gdiplus::Bitmap *hbmIcon;
 };
 struct ServerListData {
 	bool leftBtnDown;
@@ -881,6 +885,7 @@ int /*WINAPI WinM*/main(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCm
 	Gdiplus::GdiplusStartupInput gPSI;
 	ULONG_PTR gPT;
 	Gdiplus::GdiplusStartup(&gPT, &gPSI, NULL);
+	loadBitmaps();
 
 	MSG  msg ;
 	WNDCLASS wc = {0};
@@ -959,6 +964,7 @@ int /*WINAPI WinM*/main(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCm
 		DispatchMessage(&msg);
 	}
 
+	deleteBitmaps();
 	Gdiplus::GdiplusShutdown(gPT);
 	DeleteDC(tempHDC);
 	return (int) msg.wParam;
@@ -1007,7 +1013,6 @@ LRESULT CALLBACK WndProc( HWND hwndMainWin, UINT msg, WPARAM wParam, LPARAM lPar
 			AddMenus(hwndMainWin);
 			
 			//Load UI elements
-			hBmpHomeIcon = (HBITMAP) LoadImageW(NULL, L"img\\home_icon.bmp", IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE);
 			hBmpExploreIcon = (HBITMAP) LoadImageW(NULL, L"img\\explore_icon.bmp", IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE);
 			hBmpChannelPoundSign = (HBITMAP) LoadImageW(NULL, L"img\\channel_pound_sign.bmp", IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE);
 			hBmpChannelPoundSignLocked = (HBITMAP) LoadImageW(NULL, L"img\\channel_pound_sign_locked.bmp", IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE);
@@ -1192,7 +1197,6 @@ LRESULT CALLBACK WndProc( HWND hwndMainWin, UINT msg, WPARAM wParam, LPARAM lPar
 			DeleteObject(discordBlueBtnBrush);
 
 			//Delete images
-			DeleteObject(hBmpHomeIcon);
 			DeleteObject(hBmpExploreIcon);
 			DeleteObject(hBmpChannelPoundSign);
 			DeleteObject(hBmpChannelPoundSignLocked);
@@ -1336,8 +1340,7 @@ bool login(bool clearAuthPage, bool offlineMode) {
 				//Get the icon
 				if (server.HasMember("icon") && server["icon"].IsString()) {
 					iconFilename = cacheDir + L"\\" + to_wstring(sli.id) + L"\\" + utf8_to_wstring(server["icon"].GetString());
-					Gdiplus::Bitmap bmp(iconFilename.c_str(), false);
-					bmp.GetHBITMAP(serverListBG, &sli.hbmIcon);
+					sli.hbmIcon = new Gdiplus::Bitmap(iconFilename.c_str(), false);
 				} else {
 					sli.hbmIcon = NULL;
 				}
@@ -2387,7 +2390,7 @@ LRESULT CALLBACK serverListProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lParam
 			{
 				//Release the server icon bitmaps
 				for (vector<ServerListItem>::iterator it = pData->dataModel.begin(); it != pData->dataModel.end(); ++it) {
-					DeleteObject(it->hbmIcon);
+					delete it->hbmIcon;
 				}
 				if (pData != NULL) delete pData;
 			}
@@ -2442,31 +2445,20 @@ LRESULT CALLBACK serverListProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lParam
 				SelectObject(hdc, serverListColorBrush);
 				SetDCPenColor(hdc, serverListColor);
 				if (pData->scrollPos / 56 == 0) { //If the list is scrolled to the top
-					SelectObject(iconHDC, hBmpHomeIcon);
-					GetObject(hBmpHomeIcon, sizeof(bmp), &bmp);
-					//BitBlt(hdc, 12, 8, bmp.bmWidth, bmp.bmHeight, iconHDC, 0, 0, SRCCOPY);
-					//Use the rounded rectangle mask and draw the rounded white thing on the left if the mouse is over this icon
-
 					//Erase the icon area
 					Rectangle(hdc, 0, 8, 12 + 48, 8 + 48);
 
+					int roundStyle = 0;
 					if (pData->serverHoverIdx == 0) {
-						BitBlt(maskedIconDC, 0, 0, bmp.bmWidth, bmp.bmHeight, iconHDC, 0, 0, SRCCOPY);
-						BitBlt(maskedIconDC, 0, 0, bmp.bmWidth, bmp.bmHeight, roundRectMaskDC, 0, 0, SRCAND);
-
-						SelectObject(hdc, GetStockBrush(WHITE_BRUSH));
-						SetDCPenColor(hdc, RGB(255, 255, 255));
-						RoundRect(hdc, -4, 8 + 14, 4, 8 + 14 + 20, 6, 6);
-					} else if (config.roundServerIcons) {
-						BitBlt(maskedIconDC, 0, 0, bmp.bmWidth, bmp.bmHeight, iconHDC, 0, 0, SRCCOPY);
-						BitBlt(maskedIconDC, 0, 0, bmp.bmWidth, bmp.bmHeight, maskDC, 0, 0, SRCAND);
+						roundStyle = 2;
+					} else {
+						roundStyle = (config.roundServerIcons ? 1 : 0);
 					}
 
-					BitBlt(hdc, 12, 8, bmp.bmWidth, bmp.bmHeight, config.roundServerIcons ? maskedIconDC : iconHDC, 0, 0, SRCPAINT);
+					drawServerIcon(hdc, hBmpHomeIcon, 12, 8, roundStyle);
 				}
 
 				//Draw the server icons
-				//They need to be masked
 				unsigned int itemCount = pData->dataModel.size();
 				RECT tmp;
 				int itemsToDraw = (h / 56) + 1;
@@ -2482,10 +2474,6 @@ LRESULT CALLBACK serverListProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lParam
 				int i = 0;
 				wstring wst;
 				for (unsigned int j = startIdx; (j < startIdx + itemsToDraw) && (j < pData->dataModel.size()); j++) {
-					SelectObject(iconHDC, pData->dataModel.at(j).hbmIcon);
-					GetObject(pData->dataModel.at(j).hbmIcon, sizeof(bmp), &bmp);
-					StretchBlt(maskedIconDC, 0, 0, 48, 48, iconHDC, 0, 0, bmp.bmWidth, bmp.bmHeight, SRCCOPY);
-
 					//Erase the icon area
 					SelectObject(hdc, serverListColorBrush);
 					SetDCPenColor(hdc, serverListColor);
@@ -2498,19 +2486,17 @@ LRESULT CALLBACK serverListProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lParam
 						Ellipse(hdc, -4, ((i + (pData->scrollPos < 56 ? 1 : 0)) * 56) + 8 + 20, 4, ((i + (pData->scrollPos < 56 ? 1 : 0)) * 56) + 8 + 20 + 8);
 					}
 
-					//Use the rounded rectangle mask and draw the rounded white thing on the left if the mouse is over this icon
+					//Draw the rounded white thing on the left if the mouse is over this icon
 					//The ternary operator was used for an off-by-one issue when the scrollbar isn't at the top
 					//It might be better to just subtract 1 no matter what
-					if (pData->serverHoverIdx != -1 && j == pData->serverHoverIdx - 1/* + (pData->scrollPos == 0 ? -1 : 0)*/) {
-						BitBlt(maskedIconDC, 0, 0, 48, 48, roundRectMaskDC, 0, 0, SRCAND);
-
-						SelectObject(hdc, GetStockBrush(WHITE_BRUSH));
-						SetDCPenColor(hdc, RGB(255, 255, 255));
-						RoundRect(hdc, -4, ((i + (pData->scrollPos < 56 ? 1 : 0)) * 56) + 8 + 14, 4, ((i + (pData->scrollPos < 56 ? 1 : 0)) * 56) + 8 + 14 + 20, 6, 6);
+					int roundStyle = 0;
+					if ((pData->serverHoverIdx != -1 && j == pData->serverHoverIdx - 1/* + (pData->scrollPos == 0 ? -1 : 0)*/) || (pData->dataModel.at(j).id == selectedServer) /* If the server is selected, then it should use the hover style */) {
+						roundStyle = 2;
+					} else {
+						roundStyle = (config.roundServerIcons ? 1 : 0);
 					}
-					else if (config.roundServerIcons) {
-						BitBlt(maskedIconDC, 0, 0, 48, 48, maskDC, 0, 0, SRCAND);
-					}
+					//Draw the icon
+					drawServerIcon(hdc, pData->dataModel.at(j).hbmIcon, 12, ((i + (pData->scrollPos < 56 ? 1 : 0)) * 56) + 8, roundStyle);
 					
 					//If the server is selected, then we need to draw a white rounded rectangle on the left
 					if (pData->dataModel.at(j).id == selectedServer) {
@@ -2519,9 +2505,6 @@ LRESULT CALLBACK serverListProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lParam
 						RoundRect(hdc, -4, ((i + (pData->scrollPos < 56 ? 1 : 0)) * 56) + 8 + 14 - 10, 4, ((i + (pData->scrollPos < 56 ? 1 : 0)) * 56) + 8 + 14 + 20 + 10, 6, 6);
 					}
 					
-					//Draw the icon
-					BitBlt(hdc, 12, ((i + (pData->scrollPos < 56 ? 1 : 0)) * 56) + 8, 48, 48, /*config.roundServerIcons ? */maskedIconDC/* : iconHDC*/, 0, 0, SRCPAINT); //The ternary expression for y is the spacing for the Home icon
-
 					i++;
 				}
 
@@ -4233,4 +4216,75 @@ unsigned int GetMaxTextLengthForPixelWidth(HDC hdc, unsigned int width, wstring 
 	//MessageBox(NULL, wstring(L"cycles="+to_wstring((long long)cycle)+L", max characters="+to_wstring((long long)max)).c_str(), L"", MB_OK);
 	*outputWidth = s.cx;
 	return max;
+}
+
+void loadBitmaps() {
+	hBmpHomeIcon = new Gdiplus::Bitmap(L"img\\home_icon.bmp", false);
+}
+
+void deleteBitmaps() {
+	delete hBmpHomeIcon;
+}
+
+void drawServerIcon(HDC hdc, Gdiplus::Bitmap* icon, int x, int y, int roundStyle /* 0=none, 1=round, 2=hover*/) {
+	if (icon) {
+		Gdiplus::Bitmap *userIcon;
+		Gdiplus::Graphics GDIPlusOutputObject(hdc);
+		GDIPlusOutputObject.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+		Gdiplus::ImageAttributes attrs;
+
+		Gdiplus::Rect iconRect;
+		Gdiplus::Rect dest(x, y, 48, 48);
+		if (roundStyle > 0) {
+			Gdiplus::GraphicsPath *gp = new Gdiplus::GraphicsPath();
+			if (roundStyle == 1) {
+				gp->AddEllipse(x, y, 48, 48);
+			} else if (roundStyle == 2) {
+				GetRoundRectPath(gp, Gdiplus::Rect(x, y, 48, 48), 20);
+			}
+			GDIPlusOutputObject.SetClip(gp);
+			delete gp;
+		}
+		GDIPlusOutputObject.DrawImage(icon, dest);
+	}
+}
+
+//Copied from user Zeus on StackOverflow
+//https://stackoverflow.com/a/67055964/6040033
+void GetRoundRectPath(Gdiplus::GraphicsPath *pPath, Gdiplus::Rect r, int dia) {
+    // diameter can't exceed width or height
+    if(dia > r.Width)    dia = r.Width;
+    if(dia > r.Height)    dia = r.Height;
+
+    // define a corner 
+    Gdiplus::Rect Corner(r.X, r.Y, dia, dia);
+
+    // begin path
+    pPath->Reset();
+
+    // top left
+    pPath->AddArc(Corner, 180, 90);    
+
+    // tweak needed for radius of 10 (dia of 20)
+    if(dia == 20)
+    {
+        Corner.Width += 1; 
+        Corner.Height += 1; 
+        r.Width -=1; r.Height -= 1;
+    }
+
+    // top right
+    Corner.X += (r.Width - dia - 1);
+    pPath->AddArc(Corner, 270, 90);    
+    
+    // bottom right
+    Corner.Y += (r.Height - dia - 1);
+    pPath->AddArc(Corner,   0, 90);    
+    
+    // bottom left
+    Corner.X -= (r.Width - dia - 1);
+    pPath->AddArc(Corner,  90, 90);
+
+    // end path
+    pPath->CloseFigure();
 }
