@@ -34,6 +34,7 @@
 #include <codecvt>
 #include <vector>
 #include <gdiplus.h>
+#include <stdlib.h>
 
 using namespace std;
 
@@ -81,6 +82,9 @@ void loadBitmaps();
 void deleteBitmaps();
 void drawServerIcon(HDC hdc, Gdiplus::Bitmap* icon, int x, int y, int roundStyle /* 0=none, 1=round, 2=hover*/);
 void GetRoundRectPath(Gdiplus::GraphicsPath *pPath, Gdiplus::Rect r, int dia);
+uint64_t GetSystemTimeAsUnixTime();
+std::string wstring_to_utf8(const std::wstring&);
+curl_socket_t my_opensocketfunc(void*, curlsocktype, struct curl_sockaddr*);
 
 //Contains a font fix provided by "Christopher Janzon" on stackoverflow.com
 //https://stackoverflow.com/a/17075471
@@ -135,6 +139,7 @@ unsigned int selectedChannelGroupIdx = 0;
 unsigned int selectedChannelIdxWithinGroup = 0;
 string selectedServerName = "";
 string selectedChannelName = "";
+string selectedChannelTopic = "";
 
 struct LoggingServer {
 	bool enabled;
@@ -238,10 +243,30 @@ struct HoverBtnData {
 	HoverBtnData():mouseIsOver(false),leftBtnDown(false),text(L""){}
 };
 
+struct ChannelItem {
+	string name;
+	string topic;
+	uint64_t id;
+	bool voiceChannel;
+	bool locked;
+	bool unread;
+	bool hideVoiceChannelMembers;
+	int notificationSetting;
+};
+
+struct ChannelGroup {
+	string name;
+	vector<ChannelItem> channels;
+	uint64_t id;
+	bool IsCategory;
+	bool IsExpanded;
+	bool collapseUnread;
+};
 struct ServerListItem {
 	string name;
 	uint64_t id;
 	bool unread;
+	vector<ChannelGroup> dataModel;
 	Gdiplus::Bitmap *hbmIcon;
 };
 struct ServerListData {
@@ -254,25 +279,6 @@ struct ServerListData {
 	ServerListData():hwndScrollbar(NULL),serverHoverIdx(-1){}
 };
 
-struct ChannelItem {
-	string name;
-	unsigned long long id;
-	bool voiceChannel;
-	bool locked;
-	bool unread;
-	bool hideVoiceChannelMembers;
-	int notificationSetting;
-};
-
-struct ChannelGroup {
-	string name;
-	vector<ChannelItem> channels;
-	unsigned long long id;
-	bool IsCategory;
-	bool IsExpanded;
-	bool collapseUnread;
-};
-
 struct User {
 	wstring name;
 	uint64_t discriminator;
@@ -283,6 +289,10 @@ struct User {
 vector<ServerListItem> globalServerIconList;
 vector<User> globalUserList;
 struct ContentAreaData *globalContentAreaData;
+struct LeftSidebarData *globalLeftSidebarData;
+CRITICAL_SECTION globalLeftSidebarDataCS;
+struct ServerListData *globalServerListData;
+CRITICAL_SECTION globalServerListDataCS;
 HDC tempHDC;
 unsigned int messageWidth;
 
@@ -337,6 +347,44 @@ const char* createTableQueries[7] = {
 };
 
 void heartbeatThread(void* param);
+CRITICAL_SECTION discordGatewayCurlObjectCS;
+
+struct DownloadManagerJob {
+	wstring url;
+	wstring outputFolder;
+	wstring filename;
+	boolean replace;
+};
+vector<DownloadManagerJob> downloadManagerJobs;
+wstring downloadManagerCurrentURL;
+wstring downloadManagerProgress;
+CRITICAL_SECTION downloadManagerJobsCS;
+CRITICAL_SECTION downloadManagerStatusCS;
+bool shouldStopDownloadManager = false;
+void downloadManagerThread(void* param) {
+	CURL *downloadManagerCurlObject = curl_easy_init();
+	if (downloadManagerCurlObject) {
+		while (!shouldStopDownloadManager) {
+			if (downloadManagerJobs.size() > 0) {
+				FILE *file = fopen(wstring_to_utf8(wstring(downloadManagerJobs.at(0).outputFolder + downloadManagerJobs.at(0).filename)).c_str(), "wb");
+				if (file) {
+					curl_easy_setopt(downloadManagerCurlObject, CURLOPT_URL, wstring_to_utf8(downloadManagerJobs.at(0).url).c_str());
+					curl_easy_setopt(downloadManagerCurlObject, CURLOPT_USERAGENT, wstring_to_utf8(getUserAgent()).c_str());
+					curl_easy_setopt(downloadManagerCurlObject, CURLOPT_CAINFO, "cacert.pem");
+					curl_easy_setopt(downloadManagerCurlObject, CURLOPT_VERBOSE, 1L);
+					curl_easy_setopt(downloadManagerCurlObject, CURLOPT_WRITEDATA, file);
+					CURLcode res = curl_easy_perform(downloadManagerCurlObject);
+					fclose(file);
+				}
+				downloadManagerJobs.erase(begin(downloadManagerJobs));
+			} else {
+				Sleep(500);
+			}
+		}
+	}
+	curl_easy_cleanup(downloadManagerCurlObject);
+}
+
 
 void drawAuthPage(HDC hdc, int w, int h) {
 	//Save a backup of the original GDI object
@@ -637,9 +685,6 @@ void saveConfig() {
 	configFile.close();
 }
 
-void callable(const std::string str) {
-	MessageBoxA(NULL, str.c_str(), "", MB_OK);
-}
 
 curl_socket_t sock;
 
@@ -649,11 +694,12 @@ curl_socket_t my_opensocketfunc(void *clientp, curlsocktype purpose, struct curl
 
 ofstream logFile;
 int heartbeat_interval = 30000;
-int heartbeat_d = -1;
 bool shouldStopHeartbeats = false;
 bool APIIsLoggedIn = false;
 uintptr_t heartbeatThreadHandle = NULL;
-string resume_gateway_url, session_id;
+string resume_gateway_url = "wss://gateway.discord.gg/?v=10&encoding=json";
+string session_id;
+uint64_t latestDiscordSequenceNumber = 0;
 char* websocketFragment = NULL;
 unsigned long websocketFragmentSize = 0;
 unsigned long websocketFragmentCurrentIdx = 0;
@@ -665,18 +711,18 @@ static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *use
 	str += std::to_string((long long)realsize);
 	str += " bytes): ";
 	str += string((char*)data, realsize);
-	cout << endl << str;
+	logFile << endl << str;
 	
 	curl_ws_frame* frameInfo = curl_ws_meta(curl);
-	cout << endl << "flags=" << frameInfo->flags << ", offset=" << frameInfo->offset << " (actual offset " << websocketFragmentCurrentIdx << "), bytesleft=" << frameInfo->bytesleft;
+	//cout << endl << "flags=" << frameInfo->flags << ", offset=" << frameInfo->offset << " (actual offset " << websocketFragmentCurrentIdx << "), bytesleft=" << frameInfo->bytesleft;
 	if (receivedWebsocketFramesWithinFragment == 0) {
 		free(websocketFragment);
 		websocketFragment = (char*)malloc(realsize + frameInfo->bytesleft);
 		websocketFragmentSize = realsize + frameInfo->bytesleft;
-		cout << endl << "WebSocket fragment size: " << websocketFragmentSize;
+		//cout << endl << "WebSocket fragment size: " << websocketFragmentSize;
 	}
 	memcpy(websocketFragment + websocketFragmentCurrentIdx, data, realsize);
-	cout << endl << "Copied " << realsize << " bytes to offset " << websocketFragmentCurrentIdx;
+	//cout << endl << "Copied " << realsize << " bytes to offset " << websocketFragmentCurrentIdx;
 	if (frameInfo->bytesleft > 0) {
 		//This is a partial fragment so we have to just add it to the existing data
 		receivedWebsocketFramesWithinFragment++;
@@ -685,97 +731,212 @@ static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *use
 	}
 	
 	Document responseJSON;
-	cout << endl << "About to parse JSON data: " << string((char*)websocketFragment, websocketFragmentSize);
-	responseJSON.Parse(string((char*)websocketFragment, websocketFragmentSize).c_str());
-	if (responseJSON.HasParseError()) {
-		/*wstring error_msg = L"Error parsing config file (at position ";
-		long long offset = (unsigned)responseJSON.GetErrorOffset();
-		error_msg += to_wstring(offset);
-		error_msg += L"): ";
-		error_msg += utf8_to_wstring(GetParseError_En(responseJSON.GetParseError()));*/
-		cout << endl << "Error while parsing WebSocket data";
-		return realsize;
-	}
-
-	if (!responseJSON.IsObject()) {
-		cout << endl << "Error parsing WebSocket data: root element must be an object";
-		return realsize;
-	}
+	logFile << endl << "About to parse JSON data: " << string((char*)websocketFragment, websocketFragmentSize);
 	
-	rapidjson::Value::ConstMemberIterator iter = responseJSON.FindMember("op");
-	if (iter == responseJSON.MemberEnd()) {
-		cout << endl << "Could not find \"op\" element";
-		return realsize;
-	}
-	int op = responseJSON["op"].GetInt();
-	cout << endl << "op=" << op;
-	if (op >= 0 && op <= 11) cout << " (" << opcodes[op] << ")";
-	
-	string t = "";
-	if (iter != responseJSON.MemberEnd()) {
-		switch(op) {
-			case 0: //Dispatch
-				{
-					//This includes things like READY and MESSAGE_CREATE
-					t = responseJSON["t"].GetString();
-					if (t.compare("READY") == 0) {
-						//Save "resume_gateway_url" and "session_id" so we can resume if we get disconnected
-						APIIsLoggedIn = true;
-						resume_gateway_url = responseJSON["d"]["resume_gateway_url"].GetString();
-						session_id = responseJSON["d"]["session_id"].GetString();
-						cout << endl << "resume_gateway_url=" << resume_gateway_url;
-						cout << endl << "session_id" << session_id;
-					} else if (t.compare("MESSAGE_CREATE") == 0) {
-						cout << endl << "MESSAGE_CREATE: \"" << responseJSON["d"]["content"].GetString() << "\"";
-						if (stoll(responseJSON["d"]["channel_id"].GetString()) == selectedChannel) {
-							//Add the message to the content area if it's for the currently selected channel
-							//We're going to assume that channel ID's are globally unique even between servers
-							Message m;
-							m.id = stoll(responseJSON["d"]["id"].GetString());
-							m.authorID = stoll(responseJSON["d"]["author"]["id"].GetString());
-							m.text = responseJSON["d"]["content"].GetString();
-							m.deleted = false;
-							cout << endl << "m.id=" << m.id << ", m.authorID=" << m.authorID << ", m.text=\"" << m.text << "\", m.deleted=" << m.deleted;
-							globalContentAreaData->messages.insert(globalContentAreaData->messages.begin(), m);
-							recalculateTotalMessageHeight(true);
-						} else {
-							//If the message wasn't for the currently selected channel, then we should mark the channel as unread
-						}
-						break;
-					}
-				}
+	//For some reason, Discord sometimes sends invalid JSON data with multiple objects like this: {}{}
+	int objectStart = 0;
+	int objectEnd = 0;
+	int curlyBrackets = 0;
+	while (objectStart < websocketFragmentSize) {
+		for (int i = objectStart; i < websocketFragmentSize; i++) {
+			if (websocketFragment[i] == '{') {
+				curlyBrackets++;
+			} else if (websocketFragment[i] == '}') {
+				curlyBrackets--;
+			}
+			if (curlyBrackets == 0) {
+				objectEnd = i;
+				logFile << endl << "curlyBrackets is 0 at index " << i;
 				break;
-			case 1: //Heartbeat
-				break;
-			case 7: //Reconnect
-				//We need to reconnect
-				//Restart the heartbeat thread
-				shouldStopHeartbeats = true;
-				while (WaitForSingleObject((HANDLE)heartbeatThreadHandle, 0) != WAIT_OBJECT_0) {}
-				shouldStopHeartbeats = false;
-				heartbeatThreadHandle = _beginthread(heartbeatThread, 0, NULL);
-				break;
-			case 9: //Invalid session
-				break;
-			case 10: //Hello
-				//Start the heartbeat thread
-				iter = responseJSON.FindMember("d");
-				if (iter != responseJSON.MemberEnd() && responseJSON["d"]["heartbeat_interval"].IsInt()) {
-					heartbeat_interval = responseJSON["d"]["heartbeat_interval"].GetInt();
-					cout << endl << "Setting heartbeat_interval to " << heartbeat_interval;
-				}
-				shouldStopHeartbeats = false;
-				heartbeatThreadHandle = _beginthread(heartbeatThread, 0, NULL);
-				break;
-			case 11: //Heartbeat ACK
-				if (!APIIsLoggedIn) {
-					//Log in after the first heartbeat acknowledgment
-					size_t sent = 0;
-					string json = "{\"op\": 2, \"d\": {\"properties\": {\"os\": \"windows\", \"browser\": \"" + wstring_to_utf8(getUserAgent()) + "\", \"device\": \"" + wstring_to_utf8(getUserAgent()) + "\"}, \"compress\": false, \"large_threshold\": 250, \"intents\": 3276799, \"token\": \"\"}}";
-					curl_ws_send(curl, json.c_str(), json.length(), &sent, 4096, CURLWS_TEXT);
-				}
-				break;
+			}
 		}
+		
+		responseJSON.Parse(string((char*)websocketFragment + objectStart, (objectEnd - objectStart) + 1/*websocketFragmentSize*/).c_str());
+		logFile << endl << "JSON object: " << string((char*)websocketFragment + objectStart, (objectEnd - objectStart) + 1);
+		if (responseJSON.HasParseError()) {
+			/*wstring error_msg = L"Error parsing config file (at position ";
+			long long offset = (unsigned)responseJSON.GetErrorOffset();
+			error_msg += to_wstring(offset);
+			error_msg += L"): ";
+			error_msg += utf8_to_wstring(GetParseError_En(responseJSON.GetParseError()));*/
+			cout << endl << "Error while parsing WebSocket data";
+			return realsize;
+		}
+
+		if (!responseJSON.IsObject()) {
+			cout << endl << "Error parsing WebSocket data: root element must be an object";
+			return realsize;
+		}
+		
+		rapidjson::Value::ConstMemberIterator iter = responseJSON.FindMember("op");
+		if (iter == responseJSON.MemberEnd()) {
+			cout << endl << "Could not find \"op\" element";
+			return realsize;
+		}
+		int op = responseJSON["op"].GetInt();
+		cout << endl << "op=" << op;
+		if (op >= 0 && op <= 11) cout << " (" << opcodes[op] << ")";
+		
+		string t = "";
+		if (iter != responseJSON.MemberEnd()) {
+			switch(op) {
+				case 0: //Dispatch
+					{
+						//This includes things like READY and MESSAGE_CREATE
+						t = responseJSON["t"].GetString();
+						if (responseJSON["s"].IsUint64()) latestDiscordSequenceNumber = responseJSON["s"].GetUint64();
+						if (t.compare("READY") == 0) {
+							//Save "resume_gateway_url" and "session_id" so we can resume if we get disconnected
+							APIIsLoggedIn = true;
+							resume_gateway_url = responseJSON["d"]["resume_gateway_url"].GetString();
+							session_id = responseJSON["d"]["session_id"].GetString();
+							cout << endl << "resume_gateway_url=" << resume_gateway_url;
+							cout << endl << "session_id=" << session_id;
+							
+							//Load the servers and channels
+							if (responseJSON["d"]["guilds"].IsArray()) {cout << endl << "contains guilds array";
+								//Clear the channel list
+								//Lock the data model so we the UI thread doesn't try to draw it
+								EnterCriticalSection(&globalServerListDataCS);
+								cout << endl << "Entered the critical section";
+								globalLeftSidebarData->dataModel.clear();
+								Value& guildsArray = responseJSON["d"]["guilds"];
+								long long guildsArraySize = guildsArray.Size();
+								ServerListItem server;
+								ChannelGroup cg;
+								ChannelGroup defaultCG;
+								ChannelItem c;
+								cg.IsExpanded = true;
+								cg.IsCategory = true;
+								cg.collapseUnread = false;
+								defaultCG.IsExpanded = true;
+								defaultCG.IsCategory = true;
+								defaultCG.collapseUnread = false;
+								defaultCG.name = "Text Channels";
+								c.unread = false;
+								c.locked = false;
+								c.hideVoiceChannelMembers = false;
+								c.notificationSetting = 0;
+								uint64_t categoryID;
+								int channelType;
+								int channelsArraySize;
+								//Iterate over servers
+								for (int h = 0; h < guildsArraySize; h++) {
+									Value& guildObject = guildsArray[h];
+									server.id = stoull(guildObject["id"].GetString());
+									server.name = guildObject["name"].GetString();
+									server.unread = false;
+									if (!guildObject["icon"].IsNull()) {
+										server.hbmIcon = new Gdiplus::Bitmap(wstring(localAppDataPath + L"cache\\server_icons\\" + utf8_to_wstring(guildObject["icon"].GetString()) + L".png").c_str(), false);
+									} else {
+										server.hbmIcon = new Gdiplus::Bitmap(wstring(localAppDataPath + L"cache\\server_icons\\null.png").c_str(), false);;
+									}
+									
+									channelsArraySize = guildObject["channels"].Size();
+									cg.channels.clear();
+									//Iterate over the channel objects to get the categories
+									for (int i = 0; i < channelsArraySize; i++) {
+										//Skip objects that aren't categories
+										channelType = guildObject["channels"][i]["type"].GetInt();
+										
+										//Add channels with no category to a default category
+										if ((channelType == 0 /* GUILD_TEXT */ || channelType == 2 /* GUILD_VOICE */) && guildObject["channels"][i].FindMember("parent_id") == guildObject["channels"][i].MemberEnd()) {
+											c.id = stoull(guildObject["channels"][i]["id"].GetString(), NULL, 10);
+											c.name = guildObject["channels"][i]["name"].GetString();
+											c.topic = (guildObject["channels"][i].FindMember("topic") != guildObject["channels"][i].MemberEnd() && !guildObject["channels"][i]["topic"].IsNull()) ? guildObject["channels"][i]["topic"].GetString() : string("");
+											c.voiceChannel = (channelType == 2);
+											defaultCG.channels.push_back(c);
+											continue;
+										}
+										
+										if (guildObject["channels"][i]["type"].GetInt() != 4) continue;
+										categoryID = stoull(guildObject["channels"][i]["id"].GetString());
+										cg.id = categoryID;
+										cg.name = guildObject["channels"][i]["name"].GetString();
+										//Iterate over the channel objects to get the channels
+										for (int j = 0; j < channelsArraySize; j++) {
+											channelType = guildObject["channels"][j]["type"].GetInt();
+											if ((guildObject["channels"][j].FindMember("parent_id") == guildObject["channels"][j].MemberEnd() || !guildObject["channels"][j]["parent_id"].IsString() || stoull(guildObject["channels"][j]["parent_id"].GetString(), NULL, 10) != categoryID) || (channelType != 0 /* GUILD_TEXT */ && channelType != 2 /* GUILD_VOICE */)) continue;
+											c.id = stoull(guildObject["channels"][j]["id"].GetString(), NULL, 10);
+											c.name = guildObject["channels"][j]["name"].GetString();
+											c.topic = (guildObject["channels"][j].FindMember("topic") != guildObject["channels"][j].MemberEnd() && !guildObject["channels"][j]["topic"].IsNull()) ? guildObject["channels"][j]["topic"].GetString() : string("");
+											c.voiceChannel = (channelType == 2);
+											cg.channels.push_back(c);
+										} //for (int j = 0; j < channelsArraySize; j++) {
+										server.dataModel.push_back(cg);
+										cg.channels.clear();
+									} //for (int i = 0; i < channelsArraySize; i++) {
+									if (!defaultCG.channels.empty()) server.dataModel.push_back(defaultCG);
+									globalServerListData->dataModel.push_back(server);
+									defaultCG.channels.clear();
+									server.dataModel.clear();
+								}
+								//Unlock the data model
+							LeaveCriticalSection(&globalServerListDataCS);
+							}
+						} else if (t.compare("MESSAGE_CREATE") == 0) {
+							cout << endl << "MESSAGE_CREATE: \"" << responseJSON["d"]["content"].GetString() << "\"";
+							if (stoull(responseJSON["d"]["channel_id"].GetString()) == selectedChannel) {
+								//Add the message to the content area if it's for the currently selected channel
+								//We're going to assume that channel ID's are globally unique even between servers
+								Message m;
+								m.id = stoull(responseJSON["d"]["id"].GetString());
+								m.authorID = stoll(responseJSON["d"]["author"]["id"].GetString());
+								m.text = responseJSON["d"]["content"].GetString();
+								m.deleted = false;
+								cout << endl << "m.id=" << m.id << ", m.authorID=" << m.authorID << ", m.text=\"" << m.text << "\", m.deleted=" << m.deleted;
+								globalContentAreaData->messages.insert(globalContentAreaData->messages.begin(), m);
+								recalculateTotalMessageHeight(true);
+							} else {
+								//If the message wasn't for the currently selected channel, then we should mark the channel as unread
+							}
+							break;
+						}
+					}
+					break;
+				case 1: //Heartbeat
+					{
+						//If Discord requested a heartbeat then we need to send one
+						size_t sent;
+						while (!TryEnterCriticalSection(&discordGatewayCurlObjectCS)) {}
+						string heartbeatObject = "{\"op\":1,\"d\":" + (latestDiscordSequenceNumber >= 0 ? to_string(latestDiscordSequenceNumber) : string("null")) + "}";
+						curl_ws_send(curl, heartbeatObject.c_str(), heartbeatObject.length(), &sent, 4096, CURLWS_TEXT);
+						LeaveCriticalSection(&discordGatewayCurlObjectCS);
+					}
+					break;
+				case 7: //Reconnect
+					//We need to reconnect
+					//Restart the heartbeat thread
+					shouldStopHeartbeats = true;
+					while (WaitForSingleObject((HANDLE)heartbeatThreadHandle, 0) != WAIT_OBJECT_0) {}
+					shouldStopHeartbeats = false;
+					heartbeatThreadHandle = _beginthread(heartbeatThread, 0, NULL);
+					break;
+				case 9: //Invalid session
+					break;
+				case 10: //Hello
+					//Start the heartbeat thread
+					iter = responseJSON.FindMember("d");
+					if (iter != responseJSON.MemberEnd() && responseJSON["d"]["heartbeat_interval"].IsInt()) {
+						heartbeat_interval = responseJSON["d"]["heartbeat_interval"].GetInt();
+						cout << endl << "Setting heartbeat_interval to " << heartbeat_interval;
+					}
+					shouldStopHeartbeats = false;
+					heartbeatThreadHandle = _beginthread(heartbeatThread, 0, NULL);
+					break;
+				case 11: //Heartbeat ACK
+					if (!APIIsLoggedIn) {
+						//Log in after the first heartbeat acknowledgment
+						size_t sent = 0;
+						string json = "{\"op\": 2, \"d\": {\"properties\": {\"os\": \"windows\", \"browser\": \"" + wstring_to_utf8(getUserAgent()) + "\", \"device\": \"" + wstring_to_utf8(getUserAgent()) + "\"}, \"compress\": false, \"large_threshold\": 250, \"intents\": 3276799, \"token\": \"" + wstring_to_utf8(config.authToken) + "\"}}";
+						while (!TryEnterCriticalSection(&discordGatewayCurlObjectCS)) {}
+						curl_ws_send(curl, json.c_str(), json.length(), &sent, 4096, CURLWS_TEXT);
+						LeaveCriticalSection(&discordGatewayCurlObjectCS);
+					}
+					break;
+			}
+		}
+		objectStart = objectEnd + 1;
 	}
 	
 	receivedWebsocketFramesWithinFragment = 0;
@@ -784,6 +945,7 @@ static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *use
 }
 
 void websocketThread(void* param) {
+	logFile = ofstream("C:\\users\\777\\documents\\ws.log", ios::binary);
 	curl = curl_easy_init();
 	//struct curl_slist *slist=NULL;
 	if (curl) {
@@ -793,7 +955,7 @@ void websocketThread(void* param) {
 			MessageBox(NULL, L"Could not open log file", L"Error", MB_OK | MB_ICONERROR);
 		}*/
 		
-		curl_easy_setopt(curl, CURLOPT_URL, "wss://gateway.discord.gg/?v=10&encoding=json");
+		curl_easy_setopt(curl, CURLOPT_URL, resume_gateway_url.c_str());
 		curl_easy_setopt(curl, CURLOPT_USERAGENT, wstring_to_utf8(getUserAgent()).c_str());
 		curl_easy_setopt(curl, CURLOPT_OPENSOCKETFUNCTION, my_opensocketfunc);
 		curl_easy_setopt(curl, CURLOPT_CAINFO, "cacert.pem");
@@ -822,13 +984,15 @@ void heartbeatThread(void* param) {
 		heartbeatObject.str(string());
 		heartbeatObject.clear();
 		heartbeatObject << "{\"op\":1,\"d\":";
-		if (heartbeat_d >= 0) {
-			heartbeatObject << heartbeat_d;
+		if (latestDiscordSequenceNumber >= 0) {
+			heartbeatObject << latestDiscordSequenceNumber;
 		} else {
 			heartbeatObject << "null";
 		}
 		heartbeatObject << "}";
-		curl_ws_send(curl, heartbeatObject.str().c_str(), heartbeatObject.str().length(), &sent, 4096, CURLWS_TEXT);
+		while (!TryEnterCriticalSection(&discordGatewayCurlObjectCS) && !shouldStopHeartbeats) {}
+		if (!shouldStopHeartbeats) curl_ws_send(curl, heartbeatObject.str().c_str(), heartbeatObject.str().length(), &sent, 4096, CURLWS_TEXT);
+		LeaveCriticalSection(&discordGatewayCurlObjectCS);
 		for (int i = 0; i < seconds && !shouldStopHeartbeats; i++) Sleep(1000);
 	}
 }
@@ -848,7 +1012,18 @@ int initializeTables(sqlite3 *db) {
 
 int /*WINAPI WinM*/main(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
 	memset(emojiIsLoaded, 0, (EMOJI_COUNT / 8) + ((EMOJI_COUNT % 8) != 0 ? 1 : 0));
-	//_beginthread(websocketThread, 0, NULL);
+	globalLeftSidebarData = new LeftSidebarData();
+	InitializeCriticalSection(&discordGatewayCurlObjectCS);
+	InitializeCriticalSection(&globalLeftSidebarDataCS);
+	InitializeCriticalSection(&globalServerListDataCS);
+	globalServerListData = new ServerListData();
+	/*DownloadManagerJob dmj;
+	dmj.url = L"https://cdn.discordapp.com/icons/807245652072857610/dc1ae5f4eaa70301d97a4e530d3099e1.png";
+	dmj.filename = L"test.png";
+	dmj.outputFolder = L"C:\\Users\\777\\Documents\\";
+	dmj.replace = true;
+	downloadManagerJobs.push_back(dmj);*/
+	_beginthread(downloadManagerThread, 0, NULL);
 	
 	/*sqlite3 *db;
 	int rc = sqlite3_open("test.db", &db);
@@ -964,6 +1139,11 @@ int /*WINAPI WinM*/main(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCm
 		DispatchMessage(&msg);
 	}
 
+	delete globalServerListData;
+	DeleteCriticalSection(&globalServerListDataCS);
+	DeleteCriticalSection(&globalLeftSidebarDataCS);
+	DeleteCriticalSection(&discordGatewayCurlObjectCS);
+	delete globalLeftSidebarData;
 	deleteBitmaps();
 	Gdiplus::GdiplusShutdown(gPT);
 	DeleteDC(tempHDC);
@@ -1258,6 +1438,9 @@ bool login(bool clearAuthPage, bool offlineMode) {
 		TCHAR authTokenTChar[1024];
 		GetWindowText(authTokenBox, authTokenTChar, 1024);
 		config.authToken = wstring(authTokenTChar);
+		
+		//Start the Discord gateway thread
+		_beginthread(websocketThread, 0, NULL);
 	}
 
 	wstring cacheDir = config.dataDir + L"cache\\";
@@ -1282,7 +1465,7 @@ bool login(bool clearAuthPage, bool offlineMode) {
 	}
 
 	//Load the data model if offline mode is enabled
-	if (offlineMode) {
+	if (false && offlineMode) {
 		//Load cache.json from the cache folder in the local appdata subfolder
 		ifstream offlineJsonFile(cacheJson.c_str(), ios::binary);
 		if (!offlineJsonFile) {
@@ -1423,12 +1606,14 @@ bool login(bool clearAuthPage, bool offlineMode) {
 
 LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
+	//Lock the data model so it can't be modified by the gateway thread
+	EnterCriticalSection(&globalServerListDataCS);
 	HDC hdc;
 	PAINTSTRUCT ps;
 	RECT rect;
 	HGDIOBJ originalGDIObj;
 	
-	LeftSidebarData* pData = (LeftSidebarData*)GetWindowLongPtr(wnd, 0);
+	LeftSidebarData* pData = globalLeftSidebarData;//(LeftSidebarData*)GetWindowLongPtr(wnd, 0);
 	
 	POINT mousePosition;
 	
@@ -1440,178 +1625,7 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 
 	switch (msg) {
 		case WM_NCCREATE:
-			pData = new LeftSidebarData();
-			if (pData == NULL) return FALSE;
-			SetWindowLongPtr(wnd, 0, (LONG_PTR)pData);
-			{
-				pData->serverName = L"The Hive Mind";
-
-				ChannelGroup cg;
-				ChannelItem c;
-				cg.name = "CHAT💬🍒...";
-				c.name = "swarm only";
-				c.unread = false;
-				c.locked = true;
-				c.voiceChannel = true;
-				c.hideVoiceChannelMembers = true;
-				cg.IsExpanded = true;
-				cg.collapseUnread = false;
-				cg.channels.push_back(c);
-
-				c.name = "soldiers only";
-				c.unread = false;
-				c.hideVoiceChannelMembers = false;
-				cg.channels.push_back(c);
-				
-				c.name = "colony only";
-				c.unread = false;
-				cg.channels.push_back(c);
-				
-				c.name = "all roles";
-				c.unread = false;
-				cg.channels.push_back(c);
-
-				c.name = "General";
-				c.unread = false;
-				c.locked = false;
-				cg.channels.push_back(c);
-				
-				c.name = "Coding";
-				c.unread = false;
-				c.locked = false;
-				cg.channels.push_back(c);
-				
-				c.name = "Gaming";
-				c.unread = false;
-				c.locked = false;
-				cg.channels.push_back(c);
-				
-				c.name = "afk";
-				c.unread = false;
-				c.locked = false;
-				c.id = 693179154467782736;
-				cg.channels.push_back(c);
-
-				pData->dataModel.push_back(cg);
-
-
-				cg.channels.clear();
-
-				cg.name = "MISC👍...";
-				c.name = "chat3⃣lobby";
-				c.unread = true;
-				c.locked = false;
-				c.voiceChannel = false;
-				c.id = 580437515954159648;
-				cg.id = 587110876210003978;
-				cg.channels.push_back(c);
-
-				c.name = "introduce-yourself";
-				c.unread = false;
-				c.id = 580514338897395742;
-				cg.channels.push_back(c);
-
-				c.name = "swarm-only";
-				c.unread = false;
-				c.locked = true;
-				cg.channels.push_back(c);
-
-				c.name = "soldier-only";
-				c.unread = false;
-				cg.channels.push_back(c);
-
-				c.name = "colony-only";
-				c.unread = false;
-				cg.channels.push_back(c);
-
-				c.name = "general";
-				c.unread = false;
-				c.locked = false;
-				cg.channels.push_back(c);
-
-				c.name = "videos";
-				c.unread = false;
-				cg.channels.push_back(c);
-
-				c.name = "pics";
-				c.unread = false;
-				cg.channels.push_back(c);
-
-				c.name = "voip";
-				c.unread = false;
-				cg.channels.push_back(c);
-				pData->dataModel.push_back(cg);
-				
-				cg.channels.clear();
-
-				cg.name = "HACKERSPACE";
-				c.name = "hackerspace";
-				c.unread = true;
-				c.locked = false;
-				c.voiceChannel = false;
-				c.id = 713492533417607278;
-				cg.id = 713492198447906908;
-				cg.channels.push_back(c);
-
-				c.name = "hackerspace";
-				c.unread = false;
-				c.voiceChannel = true;
-				cg.channels.push_back(c);
-				c.id = 713492644906401892;
-				pData->dataModel.push_back(cg);
-				
-				cg.channels.clear();
-				
-				cg.name = "AREAS OF INTEREST...";
-				c.name = "hardware";
-				c.unread = false;
-				c.locked = false;
-				c.voiceChannel = false;
-				cg.channels.push_back(c);
-				
-				c.name = "software";
-				cg.channels.push_back(c);
-				c.name = "programming";
-				cg.channels.push_back(c);
-				c.name = "operating-systems";
-				cg.channels.push_back(c);
-				c.name = "networking";
-				cg.channels.push_back(c);
-				c.name = "web";
-				cg.channels.push_back(c);
-				c.name = "security";
-				cg.channels.push_back(c);
-				c.name = "blockchain";
-				cg.channels.push_back(c);
-				c.name = "electronics";
-				cg.channels.push_back(c);
-				c.name = "micro-controllers";
-				cg.channels.push_back(c);
-				c.name = "control-systems";
-				cg.channels.push_back(c);
-				c.name = "engineering";
-				cg.channels.push_back(c);
-				c.name = "robotics";
-				cg.channels.push_back(c);
-				c.name = "radio";
-				cg.channels.push_back(c);
-				c.name = "remote-control";
-				cg.channels.push_back(c);
-				c.name = "cnc";
-				cg.channels.push_back(c);
-				c.name = "laser-cutting";
-				cg.channels.push_back(c);
-				c.name = "3d-printing";
-				cg.channels.push_back(c);
-				c.name = "space";
-				cg.channels.push_back(c);
-				c.name = "art-and-design";
-				cg.channels.push_back(c);
-				c.name = "food-and-drink";
-				cg.channels.push_back(c);
-				pData->dataModel.push_back(cg);
-			}
-			
+			LeaveCriticalSection(&globalServerListDataCS);
 			return TRUE;
 		break;
 		case WM_CREATE:
@@ -1645,8 +1659,6 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 		}
 		break;
 		case WM_NCDESTROY:
-			if (pData != NULL) delete pData;
-			return 0;
 		break;
 		case WM_PAINT:
 			{
@@ -1893,6 +1905,7 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 		case WM_MOUSELEAVE:
 			pData->mouseIsOver = false;
 			//InvalidateRect(wnd, NULL, TRUE);
+			LeaveCriticalSection(&globalServerListDataCS);
 			return 0;
 		break;
 		case WM_LBUTTONDOWN:
@@ -1980,6 +1993,7 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 										selectedChannelGroupIdx = i;
 										selectedChannelIdxWithinGroup = j;
 										selectedChannelName = pData->dataModel.at(i).channels.at(j).name;
+										selectedChannelTopic = pData->dataModel.at(i).channels.at(j).topic;
 
 										//Update the content area
 										InvalidateRect(hwndContentArea, NULL, TRUE);
@@ -2233,6 +2247,7 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 					//UpdateWindow(wnd);
 					pData->scrollPos = si.nPos;
 				}
+				LeaveCriticalSection(&globalServerListDataCS);
 				return 0;
 			}
 		case WM_COMMAND:
@@ -2324,13 +2339,17 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 				break;
 			}
 		default:
+			LeaveCriticalSection(&globalServerListDataCS);
 			return DefWindowProcW(wnd, msg, wParam, lParam);
 	}
+	//Unlock the data model
+	LeaveCriticalSection(&globalServerListDataCS);
 	return DefWindowProcW(wnd, msg, wParam, lParam);
 }
 
 LRESULT CALLBACK serverListProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
+	EnterCriticalSection(&globalServerListDataCS);
 	HDC hdc;
 	PAINTSTRUCT ps;
 	RECT rect;
@@ -2348,11 +2367,10 @@ LRESULT CALLBACK serverListProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lParam
 
 	switch (msg) {
 		case WM_NCCREATE:
-			pData = new ServerListData();
-			if (pData == NULL) return FALSE;
+			pData = globalServerListData;
 			SetWindowLongPtr(wnd, 0, (LONG_PTR)pData);
 			pData->scrollPos = 0;
-			{
+			/*{
 				ServerListItem sli;
 				for (long long i = 0; i < globalServerIconList.size(); i++) {
 					sli.id = globalServerIconList.at(i).id;
@@ -2361,8 +2379,9 @@ LRESULT CALLBACK serverListProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lParam
 					sli.hbmIcon = globalServerIconList.at(i).hbmIcon;
 					pData->dataModel.push_back(sli);
 				}
-			}
+			}*/
 			
+			LeaveCriticalSection(&globalServerListDataCS);
 			return TRUE;
 		break;
 		case WM_CREATE:
@@ -2394,8 +2413,8 @@ LRESULT CALLBACK serverListProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lParam
 				for (vector<ServerListItem>::iterator it = pData->dataModel.begin(); it != pData->dataModel.end(); ++it) {
 					delete it->hbmIcon;
 				}
-				if (pData != NULL) delete pData;
 			}
+			LeaveCriticalSection(&globalServerListDataCS);
 			return 0;
 		break;
 		case WM_PAINT:
@@ -2542,6 +2561,7 @@ LRESULT CALLBACK serverListProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lParam
 				DeleteDC(iconHDC);
 				SelectObject(hdc, originalGDIObj);
 				EndPaint(wnd, &ps);
+				LeaveCriticalSection(&globalServerListDataCS);
 				return 0;
 			}
 		break;
@@ -2575,6 +2595,7 @@ LRESULT CALLBACK serverListProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lParam
 					r.right -= 15;
 					InvalidateRect(wnd, &r, FALSE);
 				}
+				LeaveCriticalSection(&globalServerListDataCS);
 				return 0;
 			}
 		break;
@@ -2587,6 +2608,7 @@ LRESULT CALLBACK serverListProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lParam
 				r.right -= 15;
 				InvalidateRect(wnd, &r, FALSE);
 			}
+			LeaveCriticalSection(&globalServerListDataCS);
 			return 0;
 		break;
 		case WM_LBUTTONDOWN:
@@ -2616,6 +2638,16 @@ LRESULT CALLBACK serverListProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lParam
 					//MessageBox(NULL, pData->dataModel.at(pData->serverHoverIdx - 1).name.c_str(), L"", MB_OK);
 					selectedServer = pData->dataModel.at(pData->serverHoverIdx - 1).id;
 					selectedServerName = pData->dataModel.at(pData->serverHoverIdx - 1).name;
+					
+					EnterCriticalSection(&globalLeftSidebarDataCS);
+					globalLeftSidebarData->dataModel.clear();
+					for (auto it = begin(globalServerListData->dataModel); it != end(globalServerListData->dataModel); ++it) {
+						if (it->id == selectedServer) {
+							globalLeftSidebarData->dataModel = it->dataModel;
+							break;
+						}
+					}
+					LeaveCriticalSection(&globalLeftSidebarDataCS);
 					
 					//Redraw the server list
 					InvalidateRect(hwndServerList, NULL, TRUE);
@@ -2738,6 +2770,7 @@ LRESULT CALLBACK serverListProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lParam
 					long long t;
 					t = si.nPos;
 				}
+				LeaveCriticalSection(&globalServerListDataCS);
 				return 0;
 			}
 		break;
@@ -2761,8 +2794,10 @@ LRESULT CALLBACK serverListProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lParam
 			}
 		break;
 		default:
+			LeaveCriticalSection(&globalServerListDataCS);
 			return DefWindowProcW(wnd, msg, wParam, lParam);
 	}
+	LeaveCriticalSection(&globalServerListDataCS);
 	return DefWindowProcW(wnd, msg, wParam, lParam);
 }
 
@@ -2970,7 +3005,7 @@ LRESULT CALLBACK contentAreaProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 				bool addOnce = false;
 				Gdiplus::Rect avatarRect;
 				for (auto it = pData->messages.begin(); it != pData->messages.end(); it++) {
-					if (pixelsToAdd > 250/*65*/) { //Using 250 instead of 65 prevents taller messages from disappearing when scrolling up. This number might need to be higher for taller messages so it would be best to use a formula instead
+					if (pixelsToAdd > 450/*65*/) { //Using 450 instead of 65 prevents taller messages from disappearing when scrolling up. This number might need to be higher for taller messages so it would be best to use a formula instead
 						pixelsToAdd -= it->messageHeight;
 						continue;
 					}
@@ -3050,7 +3085,7 @@ LRESULT CALLBACK contentAreaProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 				channelHeaderX += 16;
 				textRect.left = channelHeaderX;
 				textRect.right = (width - (15 + 225));
-				DrawText(hdc, L"General lobby to mingle and get to know other users. If your topic pertains to an existing category/channel however please post it there.", 137, &textRect, DT_SINGLELINE | DT_WORDBREAK | DT_NOPREFIX | DT_END_ELLIPSIS);
+				DrawText(hdc, utf8_to_wstring(selectedChannelTopic).c_str(), utf8_to_wstring(selectedChannelTopic).length(), &textRect, DT_SINGLELINE | DT_WORDBREAK | DT_NOPREFIX | DT_END_ELLIPSIS);
 				
 				//Draw the text field at the bottom
 				//44 px for the text field
@@ -4289,4 +4324,24 @@ void GetRoundRectPath(Gdiplus::GraphicsPath *pPath, Gdiplus::Rect r, int dia) {
 
     // end path
     pPath->CloseFigure();
+}
+
+uint64_t GetSystemTimeAsUnixTime() {
+   //Get the number of seconds since January 1, 1970 12:00am UTC
+   //Code released into public domain; no attribution required.
+
+   const uint64_t UNIX_TIME_START = 0x019DB1DED53E8000; //January 1, 1970 (start of Unix epoch) in "ticks"
+   const uint64_t TICKS_PER_SECOND = 10000000; //a tick is 100ns
+
+   FILETIME ft;
+   GetSystemTimeAsFileTime(&ft); //returns ticks in UTC
+
+   //Copy the low and high parts of FILETIME into a LARGE_INTEGER
+   //This is so we can access the full 64-bits as an Int64 without causing an alignment fault
+   LARGE_INTEGER li;
+   li.LowPart  = ft.dwLowDateTime;
+   li.HighPart = ft.dwHighDateTime;
+ 
+   //Convert ticks since 1/1/1970 into seconds
+   return (li.QuadPart - UNIX_TIME_START) / TICKS_PER_SECOND;
 }
