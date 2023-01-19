@@ -85,6 +85,8 @@ void GetRoundRectPath(Gdiplus::GraphicsPath *pPath, Gdiplus::Rect r, int dia);
 uint64_t GetSystemTimeAsUnixTime();
 std::string wstring_to_utf8(const std::wstring&);
 curl_socket_t my_opensocketfunc(void*, curlsocktype, struct curl_sockaddr*);
+void addMessageToDataModel(uint64_t serverID, uint64_t channelID, uint64_t messageID, uint64_t authorID, string content);
+void deleteMessageFromDataModel(uint64_t serverID, uint64_t channelID, uint64_t messageID);
 
 //Contains a font fix provided by "Christopher Janzon" on stackoverflow.com
 //https://stackoverflow.com/a/17075471
@@ -243,6 +245,14 @@ struct HoverBtnData {
 	HoverBtnData():mouseIsOver(false),leftBtnDown(false),text(L""){}
 };
 
+struct Message {
+	unsigned long long id;
+	unsigned long long authorID;
+	int messageHeight;
+	string text;
+	bool deleted;
+};
+
 struct ChannelItem {
 	string name;
 	string topic;
@@ -252,6 +262,7 @@ struct ChannelItem {
 	bool unread;
 	bool hideVoiceChannelMembers;
 	int notificationSetting;
+	vector<Message> messages;
 };
 
 struct ChannelGroup {
@@ -293,6 +304,7 @@ struct LeftSidebarData *globalLeftSidebarData;
 CRITICAL_SECTION globalLeftSidebarDataCS;
 struct ServerListData *globalServerListData;
 CRITICAL_SECTION globalServerListDataCS;
+vector<Message> *globalMessageList = NULL;
 HDC tempHDC;
 unsigned int messageWidth;
 
@@ -311,15 +323,8 @@ struct LeftSidebarData {
 	unsigned long long selectedChannelID;
 	unsigned long long rightClickItemID;
 	vector<ChannelGroup> dataModel;
+	vector<ChannelGroup> *dataModelPtr;
 	LeftSidebarData():hwndScrollbar(NULL),scrollPos(0){}
-};
-
-struct Message {
-	unsigned long long id;
-	unsigned long long authorID;
-	int messageHeight;
-	string text;
-	bool deleted;
 };
 
 struct ContentAreaData {
@@ -794,7 +799,7 @@ static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *use
 							cout << endl << "session_id=" << session_id;
 							
 							//Load the servers and channels
-							if (responseJSON["d"]["guilds"].IsArray()) {cout << endl << "contains guilds array";
+							if (responseJSON["d"]["guilds"].IsArray()) {
 								//Clear the channel list
 								//Lock the data model so we the UI thread doesn't try to draw it
 								EnterCriticalSection(&globalServerListDataCS);
@@ -875,22 +880,13 @@ static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *use
 							LeaveCriticalSection(&globalServerListDataCS);
 							}
 						} else if (t.compare("MESSAGE_CREATE") == 0) {
-							cout << endl << "MESSAGE_CREATE: \"" << responseJSON["d"]["content"].GetString() << "\"";
-							if (stoull(responseJSON["d"]["channel_id"].GetString()) == selectedChannel) {
-								//Add the message to the content area if it's for the currently selected channel
-								//We're going to assume that channel ID's are globally unique even between servers
-								Message m;
-								m.id = stoull(responseJSON["d"]["id"].GetString());
-								m.authorID = stoll(responseJSON["d"]["author"]["id"].GetString());
-								m.text = responseJSON["d"]["content"].GetString();
-								m.deleted = false;
-								cout << endl << "m.id=" << m.id << ", m.authorID=" << m.authorID << ", m.text=\"" << m.text << "\", m.deleted=" << m.deleted;
-								globalContentAreaData->messages.insert(globalContentAreaData->messages.begin(), m);
-								recalculateTotalMessageHeight(true);
-							} else {
-								//If the message wasn't for the currently selected channel, then we should mark the channel as unread
-							}
-							break;
+							//cout << endl << "MESSAGE_CREATE: \"" << responseJSON["d"]["content"].GetString() << "\"";
+							uint64_t serverID = (responseJSON["d"].FindMember("guild_id") != responseJSON["d"].MemberEnd() && responseJSON["d"]["guild_id"].IsString() ? stoull(responseJSON["d"]["guild_id"].GetString()) : -1);
+							addMessageToDataModel(serverID, stoull(responseJSON["d"]["channel_id"].GetString()), stoull(responseJSON["d"]["id"].GetString()), stoull(responseJSON["d"]["author"]["id"].GetString()), responseJSON["d"]["content"].GetString());
+							recalculateTotalMessageHeight(true);
+						} else if (t.compare("MESSAGE_DELETE") == 0) {
+							uint64_t serverID = (responseJSON["d"].FindMember("guild_id") != responseJSON["d"].MemberEnd() && responseJSON["d"]["guild_id"].IsString() ? stoull(responseJSON["d"]["guild_id"].GetString()) : -1);
+							deleteMessageFromDataModel(serverID, stoull(responseJSON["d"]["channel_id"].GetString()), stoull(responseJSON["d"]["id"].GetString()));
 						}
 					}
 					break;
@@ -1661,7 +1657,7 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 		case WM_NCDESTROY:
 		break;
 		case WM_PAINT:
-			{
+			if (globalLeftSidebarData->dataModelPtr != NULL) {
 				hdc = BeginPaint(wnd, &ps);
 				Gdiplus::Graphics GDIPlusOutputObject(hdc);
 				GDIPlusOutputObject.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
@@ -1711,7 +1707,7 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 					LineTo(hdc, 238, 22);
 
 					//Draw the channels
-					unsigned int channelGroupCount = pData->dataModel.size();
+					unsigned int channelGroupCount = pData->dataModelPtr->size();
 					int idx = 0;
 					bool shouldStopDrawingChannels = false;
 					BITMAP bmp;
@@ -1724,13 +1720,13 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 					unsigned int startingChannelWithinGroup = -1;
 					bool shouldStopSearchingForStartPosition = false;
 					unsigned int pixels = -32;//If this starts at 0 then the left sidebar will ignore the first downward tick of the scroll wheel.
-					for (unsigned int i = 0; i < pData->dataModel.size() && !shouldStopSearchingForStartPosition; i++) {
+					for (unsigned int i = 0; i < pData->dataModelPtr->size() && !shouldStopSearchingForStartPosition; i++) {
 						startingChannelGroup = i;
 						pixels += 32;
 						shouldStopSearchingForStartPosition = (pixels >= pData->scrollPos);
 						startingChannelWithinGroup = -1;
-						if (pData->dataModel.at(i).IsExpanded) {
-							for (unsigned int j = 0; j < pData->dataModel.at(i).channels.size() && !shouldStopSearchingForStartPosition; j++) {
+						if (pData->dataModelPtr->at(i).IsExpanded) {
+							for (unsigned int j = 0; j < pData->dataModelPtr->at(i).channels.size() && !shouldStopSearchingForStartPosition; j++) {
 								startingChannelWithinGroup = j;
 								pixels += 32;
 								shouldStopSearchingForStartPosition = (pixels >= pData->scrollPos);
@@ -1754,10 +1750,10 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 							Rectangle(hdc, 0, (idx * 32) + 50, 232, (idx * 32) + 50 + 32 + 32);
 							
 							//ExtTextOut(hdc, 12, (idx * 32) + 50 + 7 + 8, NULL, NULL, pData->dataModel.at(i).name.c_str(), pData->dataModel.at(i).name.length(), NULL);
-							DrawTextWithColorEmojis(hdc, &GDIPlusOutputObject, 12, (idx * 32) + 50 + 7 + 8, 223, false, (unsigned char*)pData->dataModel.at(i).name.c_str(), pData->dataModel.at(i).name.length(), false, NULL);
+							DrawTextWithColorEmojis(hdc, &GDIPlusOutputObject, 12, (idx * 32) + 50 + 7 + 8, 223, false, (unsigned char*)pData->dataModelPtr->at(i).name.c_str(), pData->dataModelPtr->at(i).name.length(), false, NULL);
 							
 							//Draw the sideways or down-facing arrow beside the channel group
-							if (pData->dataModel.at(i).IsExpanded) {
+							if (pData->dataModelPtr->at(i).IsExpanded) {
 								//Draw the down-facing arrow
 								SetDCPenColor(hdc, pData->hoverIdx == idx ? RGB(188,188,190) : RGB(125,128,133));
 								MoveToEx(hdc, 4, (idx * 32) + 50 + 15 + 5, NULL);
@@ -1777,7 +1773,7 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 							startingChannelWithinGroup = 0;
 							
 							//Because this group is collaped, we don't want to draw the channels
-							if (!pData->dataModel.at(i).IsExpanded) {
+							if (!pData->dataModelPtr->at(i).IsExpanded) {
 								startingChannelWithinGroup = -1;
 								continue;
 							}
@@ -1785,11 +1781,11 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 						
 
 						//Don't draw channels in a collapsed channel group
-						if (!pData->dataModel.at(i).IsExpanded) continue;
+						if (!pData->dataModelPtr->at(i).IsExpanded) continue;
 
 						//Draw the channels
 						SelectObject(hdc, channelNameFont);
-						for (unsigned int j = startingChannelWithinGroup; j < pData->dataModel.at(i).channels.size(); j++) {
+						for (unsigned int j = startingChannelWithinGroup; j < pData->dataModelPtr->at(i).channels.size(); j++) {
 							//Don't keep drawing past the bottom of the list
 							if (((idx * 32) + 50) > h) {
 								shouldStopDrawingChannels = true;
@@ -1797,7 +1793,7 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 							}
 
 							//Draw the channel name
-							SetTextColor(hdc, pData->dataModel.at(i).channels.at(j).unread ? RGB(255, 255, 255) : channelColor);
+							SetTextColor(hdc, pData->dataModelPtr->at(i).channels.at(j).unread ? RGB(255, 255, 255) : channelColor);
 							
 							//Draw the hover or selection background, if necessary
 							//Clear any background that may have been drawn before
@@ -1818,7 +1814,7 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 							}
 							
 							//ExtTextOut(hdc, 42, (idx * 32) + 50 + 7, NULL, NULL, pData->dataModel.at(i).channels.at(j).name.c_str(), pData->dataModel.at(i).channels.at(j).name.length(), NULL);
-							DrawTextWithColorEmojis(hdc, &GDIPlusOutputObject, 42, (idx * 32) + 50 + 7, 178, false, (unsigned char*)pData->dataModel.at(i).channels.at(j).name.c_str(), pData->dataModel.at(i).channels.at(j).name.length(), false, NULL);
+							DrawTextWithColorEmojis(hdc, &GDIPlusOutputObject, 42, (idx * 32) + 50 + 7, 178, false, (unsigned char*)pData->dataModelPtr->at(i).channels.at(j).name.c_str(), pData->dataModelPtr->at(i).channels.at(j).name.length(), false, NULL);
 
 							//Draw the channel icon
 							/*hBmpChannelPoundSign;
@@ -1828,13 +1824,13 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 							hBmpVoiceChannelIcon;
 							hBmpVoiceChannelLockedIcon;*/
 							
-							if (pData->selectedChannelID == pData->dataModel.at(i).channels.at(j).id) {
+							if (pData->selectedChannelID == pData->dataModelPtr->at(i).channels.at(j).id) {
 								//The channel is selected
 							} else {
 								//The channel is not selected
-								if (pData->dataModel.at(i).channels.at(j).locked) {
+								if (pData->dataModelPtr->at(i).channels.at(j).locked) {
 									//The channel is locked but not selected
-									if (pData->dataModel.at(i).channels.at(j).voiceChannel) {
+									if (pData->dataModelPtr->at(i).channels.at(j).voiceChannel) {
 										//The channel is a locked voice channel but is not selected
 										channelIcon = hBmpVoiceChannelLockedIcon;
 									} else {
@@ -1843,7 +1839,7 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 									}
 								} else {
 									//The channel is unlocked and not selected
-									if (pData->dataModel.at(i).channels.at(j).voiceChannel) {
+									if (pData->dataModelPtr->at(i).channels.at(j).voiceChannel) {
 										//The channel is an unlocked voice channel and is not selected
 										channelIcon = hBmpVoiceChannelIcon;
 									} else {
@@ -1857,7 +1853,7 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 							BitBlt(hdc, 20, (idx * 32) + 50 + 1 + 7, bmp.bmWidth, bmp.bmHeight, iconHDC, 0, 0, SRCCOPY);
 							
 							//Draw the half circle if the server is marked unread
-							if (pData->dataModel.at(i).channels.at(j).unread) {
+							if (pData->dataModelPtr->at(i).channels.at(j).unread) {
 								SelectObject(hdc, GetStockBrush(WHITE_BRUSH));
 								SetDCPenColor(hdc, RGB(255, 255, 255));
 								Ellipse(hdc, -4, (idx * 32) + 50 + 5 + 7, 4, (idx * 32) + 50 + 5 + 8 + 7);
@@ -1945,17 +1941,17 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 					
 					//If the user clicked a channel group, then expand or collapse it.
 					unsigned int itemIdx = -1;
-					for (unsigned int i = 0; i < pData->dataModel.size(); i++) {
+					for (unsigned int i = 0; i < pData->dataModelPtr->size(); i++) {
 						itemIdx++;
 						if (itemIdx == actualHoverIdx) {
-							pData->dataModel.at(i).IsExpanded = !pData->dataModel.at(i).IsExpanded;
+							pData->dataModelPtr->at(i).IsExpanded = !pData->dataModelPtr->at(i).IsExpanded;
 							
 							//Re-calculate the scrollbar size
 							unsigned int totalItems = 0;
-							for (unsigned int i = 0; i < pData->dataModel.size(); i++) {
+							for (unsigned int i = 0; i < pData->dataModelPtr->size(); i++) {
 								totalItems++;
-								if (pData->dataModel.at(i).IsExpanded) 
-									for (unsigned int j = 0; j < pData->dataModel.at(i).channels.size(); j++) totalItems++;
+								if (pData->dataModelPtr->at(i).IsExpanded) 
+									for (unsigned int j = 0; j < pData->dataModelPtr->at(i).channels.size(); j++) totalItems++;
 							}
 							RECT r;
 							GetClientRect(wnd, &r);
@@ -1982,25 +1978,26 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 							break;
 						}
 						//If the user clicked a channel then open it.
-						if (pData->dataModel.at(i).IsExpanded) {
+						if (pData->dataModelPtr->at(i).IsExpanded) {
 							bool shouldStopSearchingForClickedItem = false;
-							for (unsigned int j = 0; j < pData->dataModel.at(i).channels.size(); j++) {
+							for (unsigned int j = 0; j < pData->dataModelPtr->at(i).channels.size(); j++) {
 								itemIdx++;
 								if (itemIdx == actualHoverIdx) {
-									if (!pData->dataModel.at(i).channels.at(j).voiceChannel) {
+									if (!pData->dataModelPtr->at(i).channels.at(j).voiceChannel) {
 										//The user clicked a text channel
-										selectedChannel = pData->dataModel.at(i).channels.at(j).id;
+										selectedChannel = pData->dataModelPtr->at(i).channels.at(j).id;
 										selectedChannelGroupIdx = i;
 										selectedChannelIdxWithinGroup = j;
-										selectedChannelName = pData->dataModel.at(i).channels.at(j).name;
-										selectedChannelTopic = pData->dataModel.at(i).channels.at(j).topic;
+										selectedChannelName = pData->dataModelPtr->at(i).channels.at(j).name;
+										selectedChannelTopic = pData->dataModelPtr->at(i).channels.at(j).topic;
+										globalMessageList = &(pData->dataModelPtr->at(i).channels.at(j).messages);
 
 										//Update the content area
 										InvalidateRect(hwndContentArea, NULL, TRUE);
 									} else {
 										//The user clicked a voice channel
 									}
-									
+									shouldStopSearchingForClickedItem = true;
 								}
 							}
 							if (shouldStopSearchingForClickedItem) break;
@@ -2640,10 +2637,10 @@ LRESULT CALLBACK serverListProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lParam
 					selectedServerName = pData->dataModel.at(pData->serverHoverIdx - 1).name;
 					
 					EnterCriticalSection(&globalLeftSidebarDataCS);
-					globalLeftSidebarData->dataModel.clear();
+					//globalLeftSidebarData->dataModel.clear();
 					for (auto it = begin(globalServerListData->dataModel); it != end(globalServerListData->dataModel); ++it) {
 						if (it->id == selectedServer) {
-							globalLeftSidebarData->dataModel = it->dataModel;
+							globalLeftSidebarData->dataModelPtr = &(it->dataModel);
 							break;
 						}
 					}
@@ -2826,7 +2823,7 @@ LRESULT CALLBACK contentAreaProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 			SetWindowLongPtr(wnd, 0, (LONG_PTR)pData);
 			pData->scrollPos = 0;
 			pData->totalContentHeight = 0;
-			{
+			/*{
 				Message m;
 				m.messageHeight = -1;
 				
@@ -2886,7 +2883,7 @@ LRESULT CALLBACK contentAreaProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 				m.id = 776224643500605441;
 				m.text = "Trakaplex died for our sins";
 				pData->messages.push_back(m);
-			}
+			}*/
 			
 			return TRUE;
 		break;
@@ -3004,52 +3001,54 @@ LRESULT CALLBACK contentAreaProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 				//MessageBox(NULL, debugStr.c_str(), L"", MB_OK);
 				bool addOnce = false;
 				Gdiplus::Rect avatarRect;
-				for (auto it = pData->messages.begin(); it != pData->messages.end(); it++) {
-					if (pixelsToAdd > 450/*65*/) { //Using 450 instead of 65 prevents taller messages from disappearing when scrolling up. This number might need to be higher for taller messages so it would be best to use a formula instead
-						pixelsToAdd -= it->messageHeight;
-						continue;
-					}
-					if (!addOnce) {
-						textY += pixelsToAdd;
-						addOnce = true;
-					}
-					
-					messageHeight = it->messageHeight;//getMessageHeight(messageWidth, it->text);
-					//it->messageHeight = messageHeight;
-					//totalContentHeight += messageHeight + 25;
-					textY -= messageHeight;
-					
-					textRect.top = textY;
-					textRect.bottom = textY + messageHeight;
-					
-					//Draw the text
-					SetTextColor(hdc, it->deleted ? deletedMessageTextColor : messageTextColor);
-					SelectObject(hdc, smallInfoFont);
-					//DrawText(hdc, it->text.c_str(), it->text.length(), &textRect, DT_WORDBREAK | DT_EDITCONTROL);
-					DrawTextWithColorEmojis(hdc, &GDIPlusOutputObject, textRect.left, textRect.top, (textRect.right - textRect.left), true, (unsigned char*)it->text.c_str(), it->text.length(), false, NULL);
-					
-					//Don't bother drawing anything else if the current message is at the top.
-					if (textY < 48) break;
-					
-					//Draw the username
-					textY -= 22;
-					SetTextColor(hdc, RGB(255, 255, 255)); //TODO: draw username with the right color
-					SelectObject(hdc, userNameFont);
-					username = getUserNameWithDiscriminator(it->authorID);
-					ExtTextOut(hdc, textRect.left, textY, NULL, NULL, username.c_str(), username.length(), NULL);
-					
-					//Draw the avatar
-					userIcon = getUserAvatar(it->authorID);
-					if (userIcon) {
-						Gdiplus::Rect dest(16, (textY - 1), 40, 40);
-						if (config.roundUserAvatars) {
-							Gdiplus::GraphicsPath *gp = new Gdiplus::GraphicsPath();
-							gp->AddEllipse(16, (textY - 1), 40, 40);
-							GDIPlusOutputObject.SetClip(gp);
-							delete gp;
+				if (globalMessageList != NULL) {
+					for (auto it = globalMessageList->begin(); it != globalMessageList->end(); it++) {
+						if (pixelsToAdd > 450/*65*/) { //Using 450 instead of 65 prevents taller messages from disappearing when scrolling up. This number might need to be higher for taller messages so it would be best to use a formula instead
+							pixelsToAdd -= it->messageHeight;
+							continue;
 						}
-						GDIPlusOutputObject.DrawImage(userIcon, dest);
-						GDIPlusOutputObject.ResetClip();
+						if (!addOnce) {
+							textY += pixelsToAdd;
+							addOnce = true;
+						}
+						
+						messageHeight = it->messageHeight;//getMessageHeight(messageWidth, it->text);
+						//it->messageHeight = messageHeight;
+						//totalContentHeight += messageHeight + 25;
+						textY -= messageHeight;
+						
+						textRect.top = textY;
+						textRect.bottom = textY + messageHeight;
+						
+						//Draw the text
+						SetTextColor(hdc, it->deleted ? deletedMessageTextColor : messageTextColor);
+						SelectObject(hdc, smallInfoFont);
+						//DrawText(hdc, it->text.c_str(), it->text.length(), &textRect, DT_WORDBREAK | DT_EDITCONTROL);
+						DrawTextWithColorEmojis(hdc, &GDIPlusOutputObject, textRect.left, textRect.top, (textRect.right - textRect.left), true, (unsigned char*)it->text.c_str(), it->text.length(), false, NULL);
+						
+						//Don't bother drawing anything else if the current message is at the top.
+						if (textY < 48) break;
+						
+						//Draw the username
+						textY -= 22;
+						SetTextColor(hdc, RGB(255, 255, 255)); //TODO: draw username with the right color
+						SelectObject(hdc, userNameFont);
+						username = getUserNameWithDiscriminator(it->authorID);
+						ExtTextOut(hdc, textRect.left, textY, NULL, NULL, username.c_str(), username.length(), NULL);
+						
+						//Draw the avatar
+						userIcon = getUserAvatar(it->authorID);
+						if (userIcon) {
+							Gdiplus::Rect dest(16, (textY - 1), 40, 40);
+							if (config.roundUserAvatars) {
+								Gdiplus::GraphicsPath *gp = new Gdiplus::GraphicsPath();
+								gp->AddEllipse(16, (textY - 1), 40, 40);
+								GDIPlusOutputObject.SetClip(gp);
+								delete gp;
+							}
+							GDIPlusOutputObject.DrawImage(userIcon, dest);
+							GDIPlusOutputObject.ResetClip();
+						}
 					}
 				}
 				
@@ -3587,9 +3586,10 @@ void submitMessage() {
 
 void recalculateTotalMessageHeight(bool addLastMessageHeight) {
 	unsigned long long totalContentHeight = 0;
+	if (globalMessageList == NULL) return;
 	unsigned int topMessageHeight, bottomMessageHeight;
 	unsigned int idx = 0;
-	for (auto i = globalContentAreaData->messages.begin(); i != globalContentAreaData->messages.end(); i++) {
+	for (auto i = globalMessageList->begin(); i != globalMessageList->end(); i++) {
 		topMessageHeight = getMessageHeight(messageWidth, i->text.c_str());
 		if (idx == 0) bottomMessageHeight = topMessageHeight;
 		i->messageHeight = topMessageHeight;
@@ -4344,4 +4344,70 @@ uint64_t GetSystemTimeAsUnixTime() {
  
    //Convert ticks since 1/1/1970 into seconds
    return (li.QuadPart - UNIX_TIME_START) / TICKS_PER_SECOND;
+}
+
+void addMessageToDataModel(uint64_t serverID, uint64_t channelID, uint64_t messageID, uint64_t authorID, string content) {
+	cout << endl << "addMessageToDataModel(server " << serverID << ", channel " << channelID << ", message " << messageID << ", authorID " << authorID;
+	ServerListItem *server = NULL;
+	Message m;
+	m.id = messageID;
+	m.authorID = authorID;
+	m.text = content;
+	m.deleted = false;
+	/*if (serverID != -1) {
+		//We can speed this up if we know the server ID
+		for (auto it = begin(globalServerListData->dataModel); it != end(globalServerListData->dataModel) && !foundServer; ++it) {
+			if (it->id == serverID) {
+				server = &(*it);
+				break;
+			}
+		}
+	} else */{
+		//We have to do an exhaustive search for the channel
+		bool foundChannel = false;
+		for (auto it = begin(globalServerListData->dataModel); it != end(globalServerListData->dataModel) && !foundChannel; ++it) { //Servers
+			cout << endl << "server " << it->id;
+			for (auto it2 = begin(it->dataModel); it2 != end(it->dataModel) && !foundChannel; ++it2) { //Categories
+				cout << endl << "\tcategory " << it2->id;
+				for (auto it3 = begin(it2->channels); it3 != end(it2->channels) && !foundChannel; ++it3) { //Channels
+					cout << endl << "\t\tchannel " << it3->id;
+					if (it3->id == channelID) {
+						cout << endl << "\t\t\tAdding message";
+						it3->messages.push_back(m);
+						recalculateTotalMessageHeight(true);
+						foundChannel = true;
+					}
+				}
+			}
+		}
+	}
+}
+
+void deleteMessageFromDataModel(uint64_t serverID, uint64_t channelID, uint64_t messageID) {
+	ServerListItem *server = NULL;
+	/*if (serverID != -1) {
+		//We can speed this up if we know the server ID
+		for (auto it = begin(globalServerListData->dataModel); it != end(globalServerListData->dataModel); ++it) {
+			if (it->id == serverID) {
+				server = &(*it);
+				break;
+			}
+		}
+	} else */{
+		//We have to do an exhaustive search for the channel
+		bool foundMessage = false;
+		for (auto it = begin(globalServerListData->dataModel); it != end(globalServerListData->dataModel) && !foundMessage; ++it) { //Servers
+			for (auto it2 = begin(it->dataModel); it2 != end(it->dataModel) && !foundMessage; ++it2) { //Categories
+				for (auto it3 = begin(it2->channels); it3 != end(it2->channels) && !foundMessage; ++it3) { //Channels
+					for (auto it4 = begin(it3->messages); it4 != end(it3->messages) && !foundMessage; ++it4) { //Messages
+						if (it4->id == channelID) {
+							cout << endl << "\t\t\tDeleting message";
+							it4->deleted = true;
+							foundMessage = true;
+						}
+					}
+				}
+			}
+		}
+	}
 }

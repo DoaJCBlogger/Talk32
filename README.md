@@ -12,10 +12,8 @@ This project is compiled with version 7.1 of the Windows SDK.
 #### How to run
 1. Build or obtain a release
 2. If you downloaded a copy of talk32.exe, put it in the repository folder
-3. Run talk32.exe and then close it.
-4. The program only reads cached server data at the moment so download a copy of cache.7z
-5. Extract cache.7z so the "cache" folder is in your AppData\Talk32 folder (for example, C:\Users\777\AppData\Talk32)
-6. Run talk32.exe again and choose Offline Mode.
+3. Run talk32.exe
+4. Follow the instructions to get your authorization token, paste it in the field, and click "Log in"
 
 #### How to build
 1. Open the Windows SDK 7.1 command prompt.
