@@ -926,21 +926,32 @@ static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *use
 					{
 						//If Discord requested a heartbeat then we need to send one
 						size_t sent;
-						while (!TryEnterCriticalSection(&discordGatewayCurlObjectCS)) {}
+						EnterCriticalSection(&discordGatewayCurlObjectCS);
 						string heartbeatObject = "{\"op\":1,\"d\":" + (latestDiscordSequenceNumber >= 0 ? to_string(latestDiscordSequenceNumber) : string("null")) + "}";
 						curl_ws_send(curl, heartbeatObject.c_str(), heartbeatObject.length(), &sent, 4096, CURLWS_TEXT);
 						LeaveCriticalSection(&discordGatewayCurlObjectCS);
 					}
 					break;
 				case 7: //Reconnect
-					//We need to reconnect
-					//Restart the heartbeat thread
-					shouldStopHeartbeats = true;
-					while (WaitForSingleObject((HANDLE)heartbeatThreadHandle, 0) != WAIT_OBJECT_0) {}
-					shouldStopHeartbeats = false;
-					heartbeatThreadHandle = _beginthread(heartbeatThread, 0, NULL);
+					{
+						//We need to reconnect
+						size_t sent;
+						EnterCriticalSection(&discordGatewayCurlObjectCS);
+						string json = "{\"op\":1000,\"d\":" + (latestDiscordSequenceNumber >= 0 ? to_string(latestDiscordSequenceNumber) : string("null")) + "}";
+						curl_ws_send(curl, json.c_str(), json.length(), &sent, 4096, CURLWS_TEXT);
+						LeaveCriticalSection(&discordGatewayCurlObjectCS);
+						//Stop the heartbeat thread
+						shouldStopHeartbeats = true;
+						while (WaitForSingleObject((HANDLE)heartbeatThreadHandle, 0) != WAIT_OBJECT_0) {}
+						/*shouldStopHeartbeats = false;
+						heartbeatThreadHandle = _beginthread(heartbeatThread, 0, NULL);*/
+						return CURL_WRITEFUNC_ERROR;
+					}
 					break;
 				case 9: //Invalid session
+					cout << endl << "Invalid session";
+					session_id = "";
+					return CURL_WRITEFUNC_ERROR;
 					break;
 				case 10: //Hello
 					//Start the heartbeat thread
@@ -976,7 +987,7 @@ static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *use
 	websocketFragmentCurrentIdx = 0;
 	return realsize;
 }
-
+bool heartbeatThreadIsActive = false;
 void websocketThread(void* param) {
 	logFile = ofstream("C:\\users\\777\\documents\\ws.log", ios::binary);
 	curl = curl_easy_init();
@@ -988,17 +999,22 @@ void websocketThread(void* param) {
 			MessageBox(NULL, L"Could not open log file", L"Error", MB_OK | MB_ICONERROR);
 		}*/
 		
+		curl_easy_setopt(curl, CURLOPT_URL, resume_gateway_url.c_str());
+		curl_easy_setopt(curl, CURLOPT_USERAGENT, wstring_to_utf8(getUserAgent()).c_str());
+		curl_easy_setopt(curl, CURLOPT_OPENSOCKETFUNCTION, my_opensocketfunc);
+		curl_easy_setopt(curl, CURLOPT_CAINFO, "cacert.pem");
+		curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
+		curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, websocketCallback);
 		while (true) {
-			curl_easy_setopt(curl, CURLOPT_URL, resume_gateway_url.c_str());
-			curl_easy_setopt(curl, CURLOPT_USERAGENT, wstring_to_utf8(getUserAgent()).c_str());
-			curl_easy_setopt(curl, CURLOPT_OPENSOCKETFUNCTION, my_opensocketfunc);
-			curl_easy_setopt(curl, CURLOPT_CAINFO, "cacert.pem");
-			curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
-			curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, websocketCallback);
 			CURLcode res = curl_easy_perform(curl);
+			//LeaveCriticalSection(&discordGatewayCurlObjectCS);
+			cout << endl << "Discord gateway disconnected";
 			APIIsLoggedIn = false;
 			shouldStopHeartbeats = true;
-			while (WaitForSingleObject((HANDLE)heartbeatThreadHandle, 0) != WAIT_OBJECT_0) {}
+			while (heartbeatThreadIsActive) {}
+			shouldStopHeartbeats = false;
+			cout << endl << "Reconnecting to Discord gateway";
+			Sleep(5000);
 		}
 		//curl_easy_cleanup(curl);
 		//logFile.close();
@@ -1008,6 +1024,7 @@ void websocketThread(void* param) {
 
 //Continuously send heartbeats to keep the connection open
 void heartbeatThread(void* param) {
+	heartbeatThreadIsActive = true;
 	stringstream heartbeatObject;
 	size_t sent;
 	int seconds;
@@ -1030,6 +1047,8 @@ void heartbeatThread(void* param) {
 		LeaveCriticalSection(&discordGatewayCurlObjectCS);
 		for (int i = 0; i < seconds && !shouldStopHeartbeats; i++) Sleep(1000);
 	}
+	heartbeatThreadIsActive = false;
+	cout << endl << "Exiting heartbeat thread";
 }
 
 static int sqlite3Callback(void *unused, int argc, char **argv, char **azColName) {return 0;}
@@ -4485,10 +4504,10 @@ void markChannelAsUnread(uint64_t serverID, uint64_t channelID) {
 void addMessageToLog(GenericValue<UTF8<>> *messageJSON) {
 	//Skip messages without content
 	if ((*messageJSON).FindMember("content") == (*messageJSON).MemberEnd()) return;
-	cout << endl << "Logging message \"" << (*messageJSON)["content"].GetString() << "\"";
 	//Check if the user is logging this server
 	for (auto it = begin(config.loggingServers); it != end(config.loggingServers); ++it) {
 		if (it->id == stoull((*messageJSON)["guild_id"].GetString())) {
+			cout << endl << "Logging message \"" << (*messageJSON)["content"].GetString() << "\"";
 			sqlite3_stmt *stmt;
 			string query = "INSERT OR IGNORE INTO messages(ID, messageType, channelID, content, timestamp, timestampEdited, authorID, pinned) VALUES(?,?,?,?,?,?,?,?);";
 			sqlite3_prepare_v2(it->db, query.c_str(), query.length(), &stmt, NULL);
@@ -4520,10 +4539,10 @@ void addMessageToLog(GenericValue<UTF8<>> *messageJSON) {
 }
 
 void markMessageAsDeletedInLog(GenericValue<UTF8<>> *messageJSON) {
-	cout << endl << "Deleting message " << (*messageJSON)["id"].GetString() << "";
 	//Check if the user is logging this server
 	for (auto it = begin(config.loggingServers); it != end(config.loggingServers); ++it) {
 		if (it->id == stoull((*messageJSON)["guild_id"].GetString())) {
+			cout << endl << "Deleting message " << (*messageJSON)["id"].GetString() << "";
 			sqlite3_stmt *stmt;
 			string query = "UPDATE messages SET deleted=1 WHERE ID=?;";
 			sqlite3_prepare_v2(it->db, query.c_str(), query.length(), &stmt, NULL);
