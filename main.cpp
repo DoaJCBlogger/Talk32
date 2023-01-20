@@ -87,6 +87,10 @@ std::string wstring_to_utf8(const std::wstring&);
 curl_socket_t my_opensocketfunc(void*, curlsocktype, struct curl_sockaddr*);
 void addMessageToDataModel(uint64_t serverID, uint64_t channelID, uint64_t messageID, uint64_t authorID, string content);
 void deleteMessageFromDataModel(uint64_t serverID, uint64_t channelID, uint64_t messageID);
+void markChannelAsUnread(uint64_t serverID, uint64_t channelID);
+void addMessageToLog(GenericValue<UTF8<>>*);
+void markMessageAsDeletedInLog(GenericValue<UTF8<>>*);
+int initializeTables(sqlite3*);
 
 //Contains a font fix provided by "Christopher Janzon" on stackoverflow.com
 //https://stackoverflow.com/a/17075471
@@ -612,7 +616,15 @@ bool loadOrCreateConfig() {
 				LoggingServer ls;
 				ls.id = configDocument["logging_servers"][i]["id"].GetUint64();
 				ls.name = utf8_to_wstring(configDocument["logging_servers"][i]["name"].GetString());
-				ls.filename = utf8_to_wstring(configDocument["logging_servers"][i]["filename"].GetString());
+				string loggingServerFilename = configDocument["logging_servers"][i]["filename"].GetString();
+				ls.filename = utf8_to_wstring(loggingServerFilename);
+				
+				int rc = sqlite3_open(loggingServerFilename.c_str(), &ls.db);
+				if (rc) {
+					cout << endl << "Error while opening database: " << sqlite3_errmsg(ls.db);
+				} else {
+					initializeTables(ls.db);
+				}
 				//cout << endl << ls.id << ", " << wstring_to_utf8(ls.name) << ", " << wstring_to_utf8(ls.filename);
 				config.loggingServers.push_back(ls);
 			}
@@ -882,12 +894,32 @@ static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *use
 						} else if (t.compare("MESSAGE_CREATE") == 0) {
 							//cout << endl << "MESSAGE_CREATE: \"" << responseJSON["d"]["content"].GetString() << "\"";
 							uint64_t serverID = (responseJSON["d"].FindMember("guild_id") != responseJSON["d"].MemberEnd() && responseJSON["d"]["guild_id"].IsString() ? stoull(responseJSON["d"]["guild_id"].GetString()) : -1);
-							addMessageToDataModel(serverID, stoull(responseJSON["d"]["channel_id"].GetString()), stoull(responseJSON["d"]["id"].GetString()), stoull(responseJSON["d"]["author"]["id"].GetString()), responseJSON["d"]["content"].GetString());
+							uint64_t channelID = stoull(responseJSON["d"]["channel_id"].GetString());
+							//Save the message to a database if the user is logging the server it's from
+							addMessageToLog(&responseJSON["d"]);
+							if (channelID == selectedChannel) {
+								//Add the message to the current data model if the channel is selected
+								addMessageToDataModel(serverID, channelID, stoull(responseJSON["d"]["id"].GetString()), stoull(responseJSON["d"]["author"]["id"].GetString()), responseJSON["d"]["content"].GetString());
+								
+							} else {
+								//If the message is for a channel that isn't selected, then we should just mark it as unread
+								//The message will be loaded anyway with the POST request when the user clicks it
+								markChannelAsUnread(serverID, channelID);
+							}
 							recalculateTotalMessageHeight(true);
 						} else if (t.compare("MESSAGE_DELETE") == 0) {
+							markMessageAsDeletedInLog(&responseJSON["d"]);
 							uint64_t serverID = (responseJSON["d"].FindMember("guild_id") != responseJSON["d"].MemberEnd() && responseJSON["d"]["guild_id"].IsString() ? stoull(responseJSON["d"]["guild_id"].GetString()) : -1);
 							deleteMessageFromDataModel(serverID, stoull(responseJSON["d"]["channel_id"].GetString()), stoull(responseJSON["d"]["id"].GetString()));
+						} else if (t.compare("MESSAGE_UPDATE") == 0) {
+							uint64_t serverID = (responseJSON["d"].FindMember("guild_id") != responseJSON["d"].MemberEnd() && responseJSON["d"]["guild_id"].IsString() ? stoull(responseJSON["d"]["guild_id"].GetString()) : -1);
+							uint64_t channelID = stoull(responseJSON["d"]["channel_id"].GetString());
+							//Save the message to a database if the user is logging the server it's from
+							addMessageToLog(&responseJSON["d"]);
+							//recalculateTotalMessageHeight(true);
 						}
+						InvalidateRect(hwndLeftSidebar, NULL, TRUE);
+						InvalidateRect(hwndContentArea, NULL, TRUE);
 					}
 					break;
 				case 1: //Heartbeat
@@ -924,8 +956,13 @@ static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *use
 					if (!APIIsLoggedIn) {
 						//Log in after the first heartbeat acknowledgment
 						size_t sent = 0;
-						string json = "{\"op\": 2, \"d\": {\"properties\": {\"os\": \"windows\", \"browser\": \"" + wstring_to_utf8(getUserAgent()) + "\", \"device\": \"" + wstring_to_utf8(getUserAgent()) + "\"}, \"compress\": false, \"large_threshold\": 250, \"intents\": 3276799, \"token\": \"" + wstring_to_utf8(config.authToken) + "\"}}";
-						while (!TryEnterCriticalSection(&discordGatewayCurlObjectCS)) {}
+						string json = "";
+						if (session_id.empty()) {
+							json = "{\"op\": 2, \"d\": {\"properties\": {\"os\": \"windows\", \"browser\": \"" + wstring_to_utf8(getUserAgent()) + "\", \"device\": \"" + wstring_to_utf8(getUserAgent()) + "\"}, \"compress\": false, \"large_threshold\": 250, \"intents\": 3276799, \"token\": \"" + wstring_to_utf8(config.authToken) + "\"}}";
+						} else {
+							json = "{\"op\": 6, \"d\": {\"token\": \"" + wstring_to_utf8(config.authToken) + "\", \"session_id\": \"" + session_id + "\", \"seq\": " + to_string(latestDiscordSequenceNumber) + "}}";
+						}
+						EnterCriticalSection(&discordGatewayCurlObjectCS);
 						curl_ws_send(curl, json.c_str(), json.length(), &sent, 4096, CURLWS_TEXT);
 						LeaveCriticalSection(&discordGatewayCurlObjectCS);
 					}
@@ -951,20 +988,22 @@ void websocketThread(void* param) {
 			MessageBox(NULL, L"Could not open log file", L"Error", MB_OK | MB_ICONERROR);
 		}*/
 		
-		curl_easy_setopt(curl, CURLOPT_URL, resume_gateway_url.c_str());
-		curl_easy_setopt(curl, CURLOPT_USERAGENT, wstring_to_utf8(getUserAgent()).c_str());
-		curl_easy_setopt(curl, CURLOPT_OPENSOCKETFUNCTION, my_opensocketfunc);
-		curl_easy_setopt(curl, CURLOPT_CAINFO, "cacert.pem");
-		curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
-		curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, websocketCallback);
-		CURLcode res = curl_easy_perform(curl);
-		std::string r = "Websocket transfer #1 complete. CURLcode was ";
-		r += curl_easy_strerror(res);
-		MessageBoxA(NULL, r.c_str(), "", MB_OK);
-		curl_easy_cleanup(curl);
+		while (true) {
+			curl_easy_setopt(curl, CURLOPT_URL, resume_gateway_url.c_str());
+			curl_easy_setopt(curl, CURLOPT_USERAGENT, wstring_to_utf8(getUserAgent()).c_str());
+			curl_easy_setopt(curl, CURLOPT_OPENSOCKETFUNCTION, my_opensocketfunc);
+			curl_easy_setopt(curl, CURLOPT_CAINFO, "cacert.pem");
+			curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
+			curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, websocketCallback);
+			CURLcode res = curl_easy_perform(curl);
+			APIIsLoggedIn = false;
+			shouldStopHeartbeats = true;
+			while (WaitForSingleObject((HANDLE)heartbeatThreadHandle, 0) != WAIT_OBJECT_0) {}
+		}
+		//curl_easy_cleanup(curl);
 		//logFile.close();
 	}
-	MessageBoxA(NULL, "Exiting WebSocket thread", "", MB_OK);
+	//MessageBoxA(NULL, "Exiting WebSocket thread", "", MB_OK);
 }
 
 //Continuously send heartbeats to keep the connection open
@@ -1909,6 +1948,7 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 			//InvalidateRect(wnd, NULL, TRUE);
 		break;
 		case WM_LBUTTONUP:
+			if (pData->dataModelPtr == NULL) break;
 			pData->leftBtnDown = false;
 			//InvalidateRect(wnd, NULL, TRUE);
 			{
@@ -2011,6 +2051,7 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 			}
 		break;
 		case WM_RBUTTONUP:
+			if (pData->dataModelPtr == NULL) break;
 			//pData->leftBtnDown = false;
 			//InvalidateRect(wnd, NULL, TRUE);
 			{
@@ -2043,11 +2084,11 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 					
 					//If the user right-clicked a channel group, then show a context menu.
 					unsigned int itemIdx = -1;
-					for (unsigned int i = 0; i < pData->dataModel.size(); i++) {
+					for (unsigned int i = 0; i < pData->dataModelPtr->size(); i++) {
 						itemIdx++;
 						if (itemIdx == actualHoverIdx) {
 							//The user right-clicked a channel group
-							pData->rightClickItemID = pData->dataModel.at(i).id;
+							pData->rightClickItemID = pData->dataModelPtr->at(i).id;
 							HMENU hMenu = CreatePopupMenu();
 							HMENU hMenuMuteChannel = CreatePopupMenu();
 							HMENU hMenuNotificationSettings = CreatePopupMenu();
@@ -2061,7 +2102,7 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 							AppendMenuW(hMenu, MF_STRING | MF_POPUP, (UINT_PTR)hMenuMuteChannel, L"Mute Category");
 							
 							AppendMenuW(hMenu, MF_STRING, IDM_CHANNEL_GROUP_COLLAPSE_UNREAD, L"Collapse Category");
-							CheckMenuItem(hMenu, IDM_CHANNEL_GROUP_COLLAPSE_UNREAD, pData->dataModel.at(i).collapseUnread ? MF_CHECKED : MF_UNCHECKED);
+							CheckMenuItem(hMenu, IDM_CHANNEL_GROUP_COLLAPSE_UNREAD, pData->dataModelPtr->at(i).collapseUnread ? MF_CHECKED : MF_UNCHECKED);
 
 							AppendMenuW(hMenu, MF_STRING, IDM_COPY_CHANNEL_ID, L"Copy ID");
 							TrackPopupMenu(hMenu, TPM_RIGHTBUTTON, mousePosition.x, mousePosition.y, 0, wnd, NULL);
@@ -2073,13 +2114,13 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 							break;
 						}
 						//If the user right-clicked a channel then show a context menu
-						if (pData->dataModel.at(i).IsExpanded) {
+						if (pData->dataModelPtr->at(i).IsExpanded) {
 							bool shouldStopSearchingForClickedItem = false;
-							for (unsigned int j = 0; j < pData->dataModel.at(i).channels.size(); j++) {
+							for (unsigned int j = 0; j < pData->dataModelPtr->at(i).channels.size(); j++) {
 								itemIdx++;
 								if (itemIdx == actualHoverIdx) {
-									pData->rightClickItemID = pData->dataModel.at(i).channels.at(j).id;
-									if (!pData->dataModel.at(i).channels.at(j).voiceChannel) {
+									pData->rightClickItemID = pData->dataModelPtr->at(i).channels.at(j).id;
+									if (!pData->dataModelPtr->at(i).channels.at(j).voiceChannel) {
 										//The user right-clicked a text channel
 										/*selectedChannel = pData->dataModel.at(i).channels.at(j).id;
 										selectedChannelGroupIdx = i;
@@ -2105,7 +2146,7 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 										AppendMenuW(hMenuNotificationSettings, MF_STRING, IDM_NOTIFICATIONS_NONE, L"Nothing");
 										
 										int notificationSetting;
-										switch (pData->dataModel.at(i).channels.at(j).notificationSetting) {
+										switch (pData->dataModelPtr->at(i).channels.at(j).notificationSetting) {
 											case 3:
 												notificationSetting = IDM_NOTIFICATIONS_NONE;
 											break;
@@ -2137,7 +2178,7 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 										AppendMenuW(hMenu, MF_STRING, IDM_VOICE_CHANNEL_HIDE_NAMES, L"Hide Names");
 										AppendMenuW(hMenu, MF_STRING, IDM_VOICE_CHANNEL_INVITE, L"Invite People");
 										AppendMenuW(hMenu, MF_STRING, IDM_VOICE_CHANNEL_COPY_ID, L"Copy ID");
-										CheckMenuItem(hMenu, IDM_VOICE_CHANNEL_HIDE_NAMES, pData->dataModel.at(i).channels.at(j).hideVoiceChannelMembers ? MF_CHECKED : MF_UNCHECKED);
+										CheckMenuItem(hMenu, IDM_VOICE_CHANNEL_HIDE_NAMES, pData->dataModelPtr->at(i).channels.at(j).hideVoiceChannelMembers ? MF_CHECKED : MF_UNCHECKED);
 										TrackPopupMenu(hMenu, TPM_RIGHTBUTTON, mousePosition.x, mousePosition.y, 0, wnd, NULL);
 										
 										DestroyMenu(hMenu);
@@ -2156,6 +2197,7 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 			}
 		break;
 		case WM_SIZE:
+			if (pData->dataModelPtr == NULL) break;
 			{
 				RECT r;
 				GetClientRect(wnd, &r);
@@ -2164,10 +2206,10 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 				MoveWindow(pData->hwndScrollbar, r.right - 15, 50, 15, h - 50, TRUE);
 
 				unsigned int totalItems = 0;
-				for (unsigned int i = 0; i < pData->dataModel.size(); i++) {
+				for (unsigned int i = 0; i < pData->dataModelPtr->size(); i++) {
 					totalItems++;
-					if (pData->dataModel.at(i).IsExpanded) 
-						for (unsigned int j = 0; j < pData->dataModel.at(i).channels.size(); j++) totalItems++;
+					if (pData->dataModelPtr->at(i).IsExpanded) 
+						for (unsigned int j = 0; j < pData->dataModelPtr->at(i).channels.size(); j++) totalItems++;
 				}
 				SCROLLINFO si = {0};
 				GetScrollInfo(pData->hwndScrollbar, SB_CTL, &si);
@@ -2182,6 +2224,7 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 			}
 		break;
 		case WM_VSCROLL:
+			if (pData->dataModelPtr == NULL) break;
 			//Copied from "Rita Han - MSFT" on StackOverflow
 			//https://stackoverflow.com/a/62038422
 			{
@@ -2248,19 +2291,20 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 				return 0;
 			}
 		case WM_COMMAND:
+			if (pData->dataModelPtr == NULL) break;
 			switch(LOWORD(wParam)) {
 				case IDM_VOICE_CHANNEL_HIDE_NAMES:
 				{
-					for (unsigned int i = 0; i < pData->dataModel.size(); i++) {
-						if (pData->dataModel.at(i).id == pData->rightClickItemID) {
+					for (unsigned int i = 0; i < pData->dataModelPtr->size(); i++) {
+						if (pData->dataModelPtr->at(i).id == pData->rightClickItemID) {
 							//The user right-clicked a channel group
 							
 							//Stop the loop
 							break;
 						}
-						if (pData->dataModel.at(i).IsExpanded) {
+						if (pData->dataModelPtr->at(i).IsExpanded) {
 							bool shouldStopSearchingForClickedItem = false;
-							for (unsigned int j = 0; j < pData->dataModel.at(i).channels.size(); j++) {
+							for (unsigned int j = 0; j < pData->dataModelPtr->at(i).channels.size(); j++) {
 							}
 						}
 					}
@@ -2269,11 +2313,11 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 				case IDM_CHANNEL_MARK_AS_READ:
 				{
 					bool shouldStop = false;
-					for (unsigned int i = 0; i < pData->dataModel.size() && !shouldStop; i++) {
-						if (pData->dataModel.at(i).id == pData->rightClickItemID) {
+					for (unsigned int i = 0; i < pData->dataModelPtr->size() && !shouldStop; i++) {
+						if (pData->dataModelPtr->at(i).id == pData->rightClickItemID) {
 							//The user wants to mark a channel group as read
-							for (unsigned int j = 0; j < pData->dataModel.at(i).channels.size(); j++) {
-								pData->dataModel.at(i).channels.at(j).unread = false;
+							for (unsigned int j = 0; j < pData->dataModelPtr->at(i).channels.size(); j++) {
+								pData->dataModelPtr->at(i).channels.at(j).unread = false;
 							}
 							
 							//Redraw the list
@@ -2283,12 +2327,12 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 							//Stop the loop
 							break;
 						}
-						if (pData->dataModel.at(i).IsExpanded) {
+						if (pData->dataModelPtr->at(i).IsExpanded) {
 							bool shouldStopSearchingForClickedItem = false;
-							for (unsigned int j = 0; j < pData->dataModel.at(i).channels.size(); j++) {
-								if (pData->dataModel.at(i).channels.at(j).id == pData->rightClickItemID) {
+							for (unsigned int j = 0; j < pData->dataModelPtr->at(i).channels.size(); j++) {
+								if (pData->dataModelPtr->at(i).channels.at(j).id == pData->rightClickItemID) {
 									//The user wants to mark a channel as read
-									pData->dataModel.at(i).channels.at(j).unread = false;
+									pData->dataModelPtr->at(i).channels.at(j).unread = false;
 									
 									//Redraw the list
 									InvalidateRect(hwndLeftSidebar, NULL, TRUE);
@@ -2305,20 +2349,20 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 				case IDM_COPY_CHANNEL_ID:
 				{
 					bool shouldStop = false;
-					for (unsigned int i = 0; i < pData->dataModel.size() && !shouldStop; i++) {
-						if (pData->dataModel.at(i).id == pData->rightClickItemID) {
+					for (unsigned int i = 0; i < pData->dataModelPtr->size() && !shouldStop; i++) {
+						if (pData->dataModelPtr->at(i).id == pData->rightClickItemID) {
 							//The user wants to copy the ID of a channel group
-							copyText(to_string((long long)pData->dataModel.at(i).id));
+							copyText(to_string((long long)pData->dataModelPtr->at(i).id));
 							
 							//Stop the loop
 							break;
 						}
-						if (pData->dataModel.at(i).IsExpanded) {
+						if (pData->dataModelPtr->at(i).IsExpanded) {
 							bool shouldStopSearchingForClickedItem = false;
-							for (unsigned int j = 0; j < pData->dataModel.at(i).channels.size(); j++) {
-								if (pData->dataModel.at(i).channels.at(j).id == pData->rightClickItemID) {
+							for (unsigned int j = 0; j < pData->dataModelPtr->at(i).channels.size(); j++) {
+								if (pData->dataModelPtr->at(i).channels.at(j).id == pData->rightClickItemID) {
 									//The user wants to copy the ID of a channel
-									copyText(to_string((long long)pData->dataModel.at(i).channels.at(j).id));
+									copyText(to_string((long long)pData->dataModelPtr->at(i).channels.at(j).id));
 									
 									//Stop the loop
 									shouldStop = true;
@@ -4408,6 +4452,85 @@ void deleteMessageFromDataModel(uint64_t serverID, uint64_t channelID, uint64_t 
 					}
 				}
 			}
+		}
+	}
+}
+
+void markChannelAsUnread(uint64_t serverID, uint64_t channelID) {
+	ServerListItem *server = NULL;
+	/*if (serverID != -1) {
+		//We can speed this up if we know the server ID
+		for (auto it = begin(globalServerListData->dataModel); it != end(globalServerListData->dataModel); ++it) {
+			if (it->id == serverID) {
+				server = &(*it);
+				break;
+			}
+		}
+	} else */{
+		//We have to do an exhaustive search for the channel
+		bool foundChannel = false;
+		for (auto it = begin(globalServerListData->dataModel); it != end(globalServerListData->dataModel) && !foundChannel; ++it) { //Servers
+			for (auto it2 = begin(it->dataModel); it2 != end(it->dataModel) && !foundChannel; ++it2) { //Categories
+				for (auto it3 = begin(it2->channels); it3 != end(it2->channels) && !foundChannel; ++it3) { //Channels
+					if (it3->id == channelID) {
+						it3->unread = true;
+						foundChannel = true;
+					}
+				}
+			}
+		}
+	}
+}
+
+void addMessageToLog(GenericValue<UTF8<>> *messageJSON) {
+	//Skip messages without content
+	if ((*messageJSON).FindMember("content") == (*messageJSON).MemberEnd()) return;
+	cout << endl << "Logging message \"" << (*messageJSON)["content"].GetString() << "\"";
+	//Check if the user is logging this server
+	for (auto it = begin(config.loggingServers); it != end(config.loggingServers); ++it) {
+		if (it->id == stoull((*messageJSON)["guild_id"].GetString())) {
+			sqlite3_stmt *stmt;
+			string query = "INSERT OR IGNORE INTO messages(ID, messageType, channelID, content, timestamp, timestampEdited, authorID, pinned) VALUES(?,?,?,?,?,?,?,?);";
+			sqlite3_prepare_v2(it->db, query.c_str(), query.length(), &stmt, NULL);
+			sqlite3_bind_int64(stmt, 1, stoull((*messageJSON)["id"].GetString()));
+			int type = (*messageJSON)["type"].GetInt();
+			string typeString = to_string((long long)type);
+			if (type == 0) {
+				typeString = "Default";
+			} else if (type == 6) {
+				typeString = "ChannelPinnedMessage";
+			}
+			sqlite3_bind_text(stmt, 2, typeString.c_str(), typeString.length(), SQLITE_STATIC);
+			sqlite3_bind_int64(stmt, 3, stoull((*messageJSON)["channel_id"].GetString()));
+			string content = (*messageJSON)["content"].GetString();
+			sqlite3_bind_text(stmt, 4, content.c_str(), content.length(), SQLITE_STATIC);
+			sqlite3_bind_text(stmt, 5, string(((*messageJSON)["timestamp"]).GetString()).c_str(), string(((*messageJSON)["timestamp"]).GetString()).length(), SQLITE_STATIC);
+			if ((*messageJSON).FindMember("edited_timestamp") != (*messageJSON).MemberEnd() && !(*messageJSON)["edited_timestamp"].IsNull()) {
+				sqlite3_bind_text(stmt, 6, string(((*messageJSON)["edited_timestamp"]).GetString()).c_str(), string(((*messageJSON)["edited_timestamp"]).GetString()).length(), SQLITE_STATIC);
+			} else {
+				sqlite3_bind_null(stmt, 6);
+			}
+			sqlite3_bind_int64(stmt, 7, stoull((*messageJSON)["author"]["id"].GetString()));
+			sqlite3_bind_int(stmt, 8, (*messageJSON)["pinned"].GetBool() ? 1 : 0);
+			sqlite3_step(stmt);
+			
+			break;
+		}
+	}
+}
+
+void markMessageAsDeletedInLog(GenericValue<UTF8<>> *messageJSON) {
+	cout << endl << "Deleting message " << (*messageJSON)["id"].GetString() << "";
+	//Check if the user is logging this server
+	for (auto it = begin(config.loggingServers); it != end(config.loggingServers); ++it) {
+		if (it->id == stoull((*messageJSON)["guild_id"].GetString())) {
+			sqlite3_stmt *stmt;
+			string query = "UPDATE messages SET deleted=1 WHERE ID=?;";
+			sqlite3_prepare_v2(it->db, query.c_str(), query.length(), &stmt, NULL);
+			sqlite3_bind_int64(stmt, 1, stoull((*messageJSON)["id"].GetString()));
+			sqlite3_step(stmt);
+			
+			break;
 		}
 	}
 }
