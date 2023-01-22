@@ -7,7 +7,7 @@ This project is compiled with version 7.1 of the Windows SDK.
 
 ![Screenshot 2](docs/screenshot2.webp)
 
-![Screenshot 2 with font smoothing](docs/screenshot2_smoothed.webp)
+![Server logging](docs/logging_settings.webp)
 
 #### How to run
 1. Build or obtain a release

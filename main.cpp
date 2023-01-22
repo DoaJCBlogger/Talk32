@@ -35,6 +35,8 @@
 #include <vector>
 #include <gdiplus.h>
 #include <stdlib.h>
+#include <htmlhelp.h>
+#include <time.h>
 
 using namespace std;
 
@@ -91,6 +93,11 @@ void markChannelAsUnread(uint64_t serverID, uint64_t channelID);
 void addMessageToLog(GenericValue<UTF8<>>*);
 void markMessageAsDeletedInLog(GenericValue<UTF8<>>*);
 int initializeTables(sqlite3*);
+void loggingSettings(void* param);
+LRESULT CALLBACK loggingSettingsDialogProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lParam);
+void refreshLoggingServerList(HWND);
+wstring unixTimestampToHumanReadableDate(uint64_t);
+wstring padZeros(uint64_t i, int length);
 
 //Contains a font fix provided by "Christopher Janzon" on stackoverflow.com
 //https://stackoverflow.com/a/17075471
@@ -123,6 +130,8 @@ int initializeTables(sqlite3*);
 #define IDC_AUTHTOKENFIELD 7
 #define IDC_MESSAGEFIELD 8
 
+#define IDC_LOGGING_SERVERS_REFRESH 9
+
 #define AUTH_TOKEN_FIELD_WIDTH 600
 
 #define MINIMUM_WINDOW_WIDTH 985
@@ -150,10 +159,13 @@ string selectedChannelTopic = "";
 struct LoggingServer {
 	bool enabled;
 	uint64_t id;
+	wstring idString;
 	wstring name;
 	wstring filename;
+	uint64_t lastMessageTimestamp;
+	wstring lastMessageTimestampString;
 	sqlite3 *db;
-	LoggingServer():enabled(true),id(0),name(L""),filename(L""){}
+	LoggingServer():enabled(true),id(0),idString(L""),name(L""),filename(L""),lastMessageTimestamp(0),lastMessageTimestampString(L""){}
 };
 
 struct ConfigObj {
@@ -1113,7 +1125,7 @@ int /*WINAPI WinM*/main(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCm
 	
 	INITCOMMONCONTROLSEX iccx;
 	iccx.dwSize=sizeof(INITCOMMONCONTROLSEX);
-	iccx.dwICC=0;
+	iccx.dwICC = ICC_LISTVIEW_CLASSES;
 	InitCommonControlsEx(&iccx);
 
 	Gdiplus::GdiplusStartupInput gPSI;
@@ -1411,11 +1423,12 @@ LRESULT CALLBACK WndProc( HWND hwndMainWin, UINT msg, WPARAM wParam, LPARAM lPar
 				
 				case IDM_SETTINGS_LOGGING:
 					{
-						
+						_beginthread(loggingSettings, 0, NULL);
 					}
 				break;
 				
 				case IDM_HELP_USERGUIDE:
+					HtmlHelp(NULL, L"docs\\talk32.chm", HH_DISPLAY_TOPIC, NULL);
 				break;
 			}
 		break;
@@ -4529,14 +4542,15 @@ void addMessageToLog(GenericValue<UTF8<>> *messageJSON) {
 			string content = (*messageJSON)["content"].GetString();
 			sqlite3_bind_text(stmt, 4, content.c_str(), content.length(), SQLITE_STATIC);
 			sqlite3_bind_text(stmt, 5, string(((*messageJSON)["timestamp"]).GetString()).c_str(), string(((*messageJSON)["timestamp"]).GetString()).length(), SQLITE_STATIC);
-			if ((*messageJSON).FindMember("edited_timestamp") != (*messageJSON).MemberEnd() && !(*messageJSON)["edited_timestamp"].IsNull()) {
+			bool containsEditedTimestamp = (*messageJSON).FindMember("edited_timestamp") != (*messageJSON).MemberEnd() && !(*messageJSON)["edited_timestamp"].IsNull();
+			if (containsEditedTimestamp) {
 				sqlite3_bind_text(stmt, 6, string(((*messageJSON)["edited_timestamp"]).GetString()).c_str(), string(((*messageJSON)["edited_timestamp"]).GetString()).length(), SQLITE_STATIC);
 			} else {
 				sqlite3_bind_null(stmt, 6);
 			}
 			sqlite3_bind_int64(stmt, 7, stoull((*messageJSON)["author"]["id"].GetString()));
 			sqlite3_bind_int(stmt, 8, (*messageJSON)["pinned"].GetBool() ? 1 : 0);
-			sqlite3_step(stmt);
+			if (sqlite3_step(stmt) == SQLITE_DONE) it->lastMessageTimestamp = GetSystemTimeAsUnixTime();//(containsEditedTimestamp ? utf8_to_wstring(((*messageJSON)["edited_timestamp"]).GetString()) : utf8_to_wstring(((*messageJSON)["timestamp"]).GetString()));
 			
 			break;
 		}
@@ -4552,9 +4566,158 @@ void markMessageAsDeletedInLog(GenericValue<UTF8<>> *messageJSON) {
 			string query = "UPDATE messages SET deleted=1 WHERE ID=?;";
 			sqlite3_prepare_v2(it->db, query.c_str(), query.length(), &stmt, NULL);
 			sqlite3_bind_int64(stmt, 1, stoull((*messageJSON)["id"].GetString()));
-			sqlite3_step(stmt);
+			if (sqlite3_step(stmt) == SQLITE_DONE) it->lastMessageTimestamp = GetSystemTimeAsUnixTime();
 			
 			break;
 		}
 	}
+}
+bool loggingSettingsDialogIsOpen = false;
+HWND loggingSettingsDialogHWND = NULL;
+void loggingSettings(void* param) {
+	if (loggingSettingsDialogIsOpen) return;
+	loggingSettingsDialogIsOpen = true;
+	
+	WNDCLASSW wc;
+	HWND hwnd;
+	MSG msg;
+	HINSTANCE hInstance = (HINSTANCE)GetWindowLong(hwndMainWin, GWL_HINSTANCE);
+	
+	memset(&wc, 0, sizeof(wc));
+	wc.lpszClassName = TEXT("LoggingSettingsDialog");
+	wc.hInstance     = hInstance;
+	//windowBGBrush = CreateSolidBrush(mainGrayColor);
+	wc.hbrBackground = (HBRUSH)GetSysColorBrush(COLOR_BTNFACE);
+	wc.lpfnWndProc   = loggingSettingsDialogProc;
+	wc.hCursor       = LoadCursor(0, IDC_ARROW);
+	RegisterClass(&wc);
+	
+	hwnd = CreateWindowW(wc.lpszClassName, L"Logging settings", WS_OVERLAPPEDWINDOW | WS_VISIBLE, 200, 200, 530, 600, 0, 0, hInstance, 0);
+	
+	UpdateWindow(hwnd);
+	ShowWindow(hwnd, SW_SHOWNORMAL);
+	
+	while (GetMessage(&msg, hwnd, 0, 0) > 0) {
+		TranslateMessage(&msg);
+		DispatchMessage(&msg);
+	}
+	
+	UnregisterClassA("LoggingSettingsDialog", hInstance);
+	loggingSettingsDialogIsOpen = false;
+}
+
+LRESULT CALLBACK loggingSettingsDialogProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+	static HWND loggingServerListHWND;
+	HINSTANCE hInstance = (HINSTANCE)GetWindowLong(hwndMainWin, GWL_HINSTANCE);
+	switch(msg) {
+		case WM_CREATE:
+			{
+				loggingServerListHWND = CreateWindowW(WC_LISTVIEW, L"", WS_CHILD | LVS_REPORT | LVS_EDITLABELS | WS_VISIBLE, 25, 25, 472/*460*/, 300, wnd, NULL, hInstance, NULL);
+				SetWindowLongPtr(loggingServerListHWND, GWL_EXSTYLE, WS_EX_CLIENTEDGE);
+				SendMessage(loggingServerListHWND, LVM_SETEXTENDEDLISTVIEWSTYLE, 0, LVS_EX_FULLROWSELECT);
+				LV_COLUMN lvCol;
+				memset(&lvCol, 0, sizeof(lvCol));
+				lvCol.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
+				lvCol.cx = 150;
+				lvCol.pszText = L"Name";
+				SendMessage(loggingServerListHWND, LVM_INSERTCOLUMN, 0, (LPARAM)&lvCol);
+				lvCol.cx = 130;
+				lvCol.pszText = L"Guild ID";
+				SendMessage(loggingServerListHWND, LVM_INSERTCOLUMN, 1, (LPARAM)&lvCol);
+				lvCol.cx = 200;
+				lvCol.pszText = L"Last update";
+				SendMessage(loggingServerListHWND, LVM_INSERTCOLUMN, 2, (LPARAM)&lvCol);
+				lvCol.cx = 300;
+				lvCol.pszText = L"Filename";
+				SendMessage(loggingServerListHWND, LVM_INSERTCOLUMN, 3, (LPARAM)&lvCol);
+				lvCol.cx = 60;
+				lvCol.pszText = L"Enabled";
+				SendMessage(loggingServerListHWND, LVM_INSERTCOLUMN, 4, (LPARAM)&lvCol);
+				
+				HWND refreshButton = CreateWindowW(L"BUTTON", L"Refresh", WS_TABSTOP | WS_CHILD | BS_DEFPUSHBUTTON | WS_VISIBLE, 12, 324, 80, 25, wnd, (HMENU)IDC_LOGGING_SERVERS_REFRESH, hInstance, NULL);
+				SendMessage(refreshButton, WM_SETFONT, (WPARAM)GetStockObject(DEFAULT_GUI_FONT), (LPARAM)1);
+				
+				refreshLoggingServerList(loggingServerListHWND);
+				return 0;
+			}
+			break;
+		case WM_SIZE:
+			{
+				int width = LOWORD(lParam);
+				//int height = HIWORD(lParam);
+				MoveWindow(loggingServerListHWND, 12/*25*/, 12/*25*/, width - 25/*50*/, 300, TRUE);
+				return 0;
+			}
+			break;
+		case WM_COMMAND:
+			{
+				if ((HIWORD(wParam) == BN_CLICKED) && (lParam != 0)) {
+					switch(LOWORD(wParam)) {
+						case IDC_LOGGING_SERVERS_REFRESH:
+							{
+								refreshLoggingServerList(loggingServerListHWND);
+							}
+							break;
+					}
+					return 0;
+				}
+			}
+			break;
+	}
+	return DefWindowProc(wnd, msg, wParam, lParam);
+}
+
+void refreshLoggingServerList(HWND loggingServerListHWND) {
+	SendMessage(loggingServerListHWND, LVM_DELETEALLITEMS, 0, 0);
+	
+	LVITEM lvItem;
+	memset(&lvItem, 0, sizeof(lvItem));
+	lvItem.mask = LVIF_TEXT;
+	lvItem.cchTextMax = 256;
+
+	int idx = 0;
+	for (auto it = begin(config.loggingServers); it != end(config.loggingServers); ++it) {
+		lvItem.iItem = idx;
+		lvItem.iSubItem = 0;
+		lvItem.pszText = (LPWSTR)it->name.c_str();
+		lvItem.lParam = (LPARAM)&(*it);
+		SendMessage(loggingServerListHWND, LVM_INSERTITEM, idx, (LPARAM)&lvItem);
+		
+		//We have to store the server ID as a string because Windows XP won't show it if we try to pass to_wstring()
+		if (it->idString.empty()) it->idString = to_wstring(it->id);
+		lvItem.pszText = (LPWSTR)it->idString.c_str();
+		lvItem.iSubItem = 1;
+		SendMessage(loggingServerListHWND, LVM_SETITEM, idx, (LPARAM)&lvItem);
+		
+		it->lastMessageTimestampString = unixTimestampToHumanReadableDate(it->lastMessageTimestamp);
+		lvItem.pszText = (LPWSTR)it->lastMessageTimestampString.c_str();
+		lvItem.iSubItem = 2;
+		SendMessage(loggingServerListHWND, LVM_SETITEM, idx, (LPARAM)&lvItem);
+		
+		lvItem.pszText = (LPWSTR)it->filename.c_str();
+		lvItem.iSubItem = 3;
+		SendMessage(loggingServerListHWND, LVM_SETITEM, idx, (LPARAM)&lvItem);
+		
+		lvItem.pszText = (it->enabled ? L"Yes" : L"No");
+		lvItem.iSubItem = 4;
+		SendMessage(loggingServerListHWND, LVM_SETITEM, idx, (LPARAM)&lvItem);
+		
+		idx++;
+	}
+}
+
+wstring unixTimestampToHumanReadableDate(uint64_t timestamp) {
+	if (timestamp == 0) return L"";
+	
+	struct tm newTime;
+	_gmtime64_s(&newTime, ((__int64*)&timestamp));
+	return to_wstring((long long)newTime.tm_year + 1900) + L"-" + padZeros((newTime.tm_mon + 1), 2) + L"-" + padZeros(newTime.tm_mday, 2) + L"T" + padZeros(newTime.tm_hour, 2) + L":" + padZeros(newTime.tm_min, 2) + L":" + padZeros(newTime.tm_sec, 2) + L".000+00:00";;
+}
+
+wstring padZeros(uint64_t i, int length) {
+	wstring retVal = to_wstring(i);
+	if (retVal.length() < length) {
+		for (int j = 0; j < length - retVal.length(); j++) retVal = L"0" + retVal;
+	}
+	return retVal;
 }
