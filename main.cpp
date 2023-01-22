@@ -721,6 +721,7 @@ char* websocketFragment = NULL;
 unsigned long websocketFragmentSize = 0;
 unsigned long websocketFragmentCurrentIdx = 0;
 unsigned long receivedWebsocketFramesWithinFragment = 0;
+bool heartbeatThreadIsActive = false;
 static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *userp) {
 	size_t realsize = size * nmemb;
 	logFile.write((char*)data, realsize);
@@ -936,13 +937,17 @@ static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *use
 					{
 						//We need to reconnect
 						size_t sent;
+						cout << endl << "Sending op 1000 to close the connection";
 						EnterCriticalSection(&discordGatewayCurlObjectCS);
 						string json = "{\"op\":1000,\"d\":" + (latestDiscordSequenceNumber >= 0 ? to_string(latestDiscordSequenceNumber) : string("null")) + "}";
 						curl_ws_send(curl, json.c_str(), json.length(), &sent, 4096, CURLWS_TEXT);
 						LeaveCriticalSection(&discordGatewayCurlObjectCS);
+						cout << endl << "Sent op 1000";
 						//Stop the heartbeat thread
 						shouldStopHeartbeats = true;
-						while (WaitForSingleObject((HANDLE)heartbeatThreadHandle, 0) != WAIT_OBJECT_0) {}
+						cout << endl << "Waiting for the heartbeat thread to stop";
+						while (heartbeatThreadIsActive) {}
+						cout << endl << "Heartbeat thread stopped";
 						/*shouldStopHeartbeats = false;
 						heartbeatThreadHandle = _beginthread(heartbeatThread, 0, NULL);*/
 						return CURL_WRITEFUNC_ERROR;
@@ -987,7 +992,7 @@ static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *use
 	websocketFragmentCurrentIdx = 0;
 	return realsize;
 }
-bool heartbeatThreadIsActive = false;
+
 void websocketThread(void* param) {
 	logFile = ofstream("C:\\users\\777\\documents\\ws.log", ios::binary);
 	curl = curl_easy_init();
