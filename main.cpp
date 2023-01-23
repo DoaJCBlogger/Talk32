@@ -98,6 +98,9 @@ LRESULT CALLBACK loggingSettingsDialogProc(HWND wnd, UINT msg, WPARAM wParam, LP
 void refreshLoggingServerList(HWND);
 wstring unixTimestampToHumanReadableDate(uint64_t);
 wstring padZeros(uint64_t i, int length);
+bool fileExists(LPCWSTR filename);
+bool folderExists(LPCWSTR foldername);
+void addServerToLog(uint64_t id, string name, string icon, string currentTimestamp);
 
 //Contains a font fix provided by "Christopher Janzon" on stackoverflow.com
 //https://stackoverflow.com/a/17075471
@@ -155,6 +158,7 @@ unsigned int selectedChannelIdxWithinGroup = 0;
 string selectedServerName = "";
 string selectedChannelName = "";
 string selectedChannelTopic = "";
+DWORD globalMainThreadID = NULL;
 
 struct LoggingServer {
 	bool enabled;
@@ -162,10 +166,11 @@ struct LoggingServer {
 	wstring idString;
 	wstring name;
 	wstring filename;
+	wstring assetFolder;
 	uint64_t lastMessageTimestamp;
 	wstring lastMessageTimestampString;
 	sqlite3 *db;
-	LoggingServer():enabled(true),id(0),idString(L""),name(L""),filename(L""),lastMessageTimestamp(0),lastMessageTimestampString(L""){}
+	LoggingServer():enabled(true),id(0),idString(L""),name(L""),filename(L""),assetFolder(L""),lastMessageTimestamp(0),lastMessageTimestampString(L""){}
 };
 
 struct ConfigObj {
@@ -387,15 +392,20 @@ void downloadManagerThread(void* param) {
 	if (downloadManagerCurlObject) {
 		while (!shouldStopDownloadManager) {
 			if (downloadManagerJobs.size() > 0) {
-				FILE *file = fopen(wstring_to_utf8(wstring(downloadManagerJobs.at(0).outputFolder + downloadManagerJobs.at(0).filename)).c_str(), "wb");
-				if (file) {
-					curl_easy_setopt(downloadManagerCurlObject, CURLOPT_URL, wstring_to_utf8(downloadManagerJobs.at(0).url).c_str());
-					curl_easy_setopt(downloadManagerCurlObject, CURLOPT_USERAGENT, wstring_to_utf8(getUserAgent()).c_str());
-					curl_easy_setopt(downloadManagerCurlObject, CURLOPT_CAINFO, "cacert.pem");
-					curl_easy_setopt(downloadManagerCurlObject, CURLOPT_VERBOSE, 1L);
-					curl_easy_setopt(downloadManagerCurlObject, CURLOPT_WRITEDATA, file);
-					CURLcode res = curl_easy_perform(downloadManagerCurlObject);
-					fclose(file);
+				if (downloadManagerJobs.at(0).outputFolder.at(downloadManagerJobs.at(0).outputFolder.length() - 1) != L'\\') downloadManagerJobs.at(0).outputFolder += L"\\";
+				wstring path = wstring(downloadManagerJobs.at(0).outputFolder + downloadManagerJobs.at(0).filename);
+				if (downloadManagerJobs.at(0).replace || (!downloadManagerJobs.at(0).replace && !fileExists(path.c_str()))) {
+					cout << endl << "Downloading " << wstring_to_utf8(downloadManagerJobs.at(0).url) << " to " << wstring_to_utf8(path);
+					FILE *file = fopen(wstring_to_utf8(wstring(downloadManagerJobs.at(0).outputFolder + downloadManagerJobs.at(0).filename)).c_str(), "wb");
+					if (file) {
+						curl_easy_setopt(downloadManagerCurlObject, CURLOPT_URL, wstring_to_utf8(downloadManagerJobs.at(0).url).c_str());
+						curl_easy_setopt(downloadManagerCurlObject, CURLOPT_USERAGENT, wstring_to_utf8(getUserAgent()).c_str());
+						curl_easy_setopt(downloadManagerCurlObject, CURLOPT_CAINFO, "cacert.pem");
+						curl_easy_setopt(downloadManagerCurlObject, CURLOPT_VERBOSE, 1L);
+						curl_easy_setopt(downloadManagerCurlObject, CURLOPT_WRITEDATA, file);
+						CURLcode res = curl_easy_perform(downloadManagerCurlObject);
+						fclose(file);
+					}
 				}
 				downloadManagerJobs.erase(begin(downloadManagerJobs));
 			} else {
@@ -630,6 +640,17 @@ bool loadOrCreateConfig() {
 				ls.name = utf8_to_wstring(configDocument["logging_servers"][i]["name"].GetString());
 				string loggingServerFilename = configDocument["logging_servers"][i]["filename"].GetString();
 				ls.filename = utf8_to_wstring(loggingServerFilename);
+				string loggingServerAssetFolder = configDocument["logging_servers"][i]["assets"].GetString();
+				ls.assetFolder = utf8_to_wstring(loggingServerAssetFolder);
+				if (ls.assetFolder.at(i) != L'\\') ls.assetFolder += L"\\";
+				wstring avatarsFolder = utf8_to_wstring(loggingServerAssetFolder) + L"avatars";
+				if (!folderExists(avatarsFolder.c_str())) {
+					if (!SUCCEEDED(CreateDirectory(avatarsFolder.c_str(), NULL))) {
+						wstring error_msg = L"Error: could not create avatars directory at ";
+						error_msg += avatarsFolder;
+						MessageBox(NULL, error_msg.c_str(), L"Error", MB_OK | MB_ICONERROR);
+					}
+				}
 				
 				int rc = sqlite3_open(loggingServerFilename.c_str(), &ls.db);
 				if (rc) {
@@ -822,13 +843,14 @@ static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *use
 							session_id = responseJSON["d"]["session_id"].GetString();
 							cout << endl << "resume_gateway_url=" << resume_gateway_url;
 							cout << endl << "session_id=" << session_id;
+							wstring currentTimestamp = unixTimestampToHumanReadableDate(GetSystemTimeAsUnixTime());
 							
 							//Load the servers and channels
 							if (responseJSON["d"]["guilds"].IsArray()) {
 								//Clear the channel list
 								//Lock the data model so we the UI thread doesn't try to draw it
 								EnterCriticalSection(&globalServerListDataCS);
-								cout << endl << "Entered the critical section";
+								//cout << endl << "Entered the critical section";
 								globalLeftSidebarData->dataModel.clear();
 								Value& guildsArray = responseJSON["d"]["guilds"];
 								long long guildsArraySize = guildsArray.Size();
@@ -856,11 +878,14 @@ static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *use
 									server.id = stoull(guildObject["id"].GetString());
 									server.name = guildObject["name"].GetString();
 									server.unread = false;
+									string icon = "";
 									if (!guildObject["icon"].IsNull()) {
-										server.hbmIcon = new Gdiplus::Bitmap(wstring(localAppDataPath + L"cache\\server_icons\\" + utf8_to_wstring(guildObject["icon"].GetString()) + L".png").c_str(), false);
+										icon = guildObject["icon"].GetString();
+										server.hbmIcon = new Gdiplus::Bitmap(wstring(localAppDataPath + L"cache\\server_icons\\" + utf8_to_wstring(icon) + L".png").c_str(), false);
 									} else {
 										server.hbmIcon = new Gdiplus::Bitmap(wstring(localAppDataPath + L"cache\\server_icons\\null.png").c_str(), false);;
 									}
+									addServerToLog(server.id, server.name, icon, wstring_to_utf8(currentTimestamp));
 									
 									channelsArraySize = guildObject["channels"].Size();
 									cg.channels.clear();
@@ -919,7 +944,7 @@ static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *use
 								//The message will be loaded anyway with the POST request when the user clicks it
 								markChannelAsUnread(serverID, channelID);
 							}
-							recalculateTotalMessageHeight(true);
+							//recalculateTotalMessageHeight(true);
 						} else if (t.compare("MESSAGE_DELETE") == 0) {
 							markMessageAsDeletedInLog(&responseJSON["d"]);
 							uint64_t serverID = (responseJSON["d"].FindMember("guild_id") != responseJSON["d"].MemberEnd() && responseJSON["d"]["guild_id"].IsString() ? stoull(responseJSON["d"]["guild_id"].GetString()) : -1);
@@ -931,8 +956,8 @@ static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *use
 							addMessageToLog(&responseJSON["d"]);
 							//recalculateTotalMessageHeight(true);
 						}
-						InvalidateRect(hwndLeftSidebar, NULL, TRUE);
-						InvalidateRect(hwndContentArea, NULL, TRUE);
+						/*InvalidateRect(hwndLeftSidebar, NULL, TRUE);
+						InvalidateRect(hwndContentArea, NULL, TRUE);*/
 					}
 					break;
 				case 1: //Heartbeat
@@ -1096,14 +1121,7 @@ int /*WINAPI WinM*/main(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCm
 	downloadManagerJobs.push_back(dmj);*/
 	_beginthread(downloadManagerThread, 0, NULL);
 	
-	/*sqlite3 *db;
-	int rc = sqlite3_open("test.db", &db);
-	if (rc) {
-		cout << endl << "Error while opening database: " << sqlite3_errmsg(db);
-	} else {
-		initializeTables(db);
-	}
-	sqlite3_close(db);*/
+	globalMainThreadID = GetCurrentThreadId();
 	
 	//Initialize the config struct
 	config.authToken = L"";
@@ -2904,67 +2922,6 @@ LRESULT CALLBACK contentAreaProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 			SetWindowLongPtr(wnd, 0, (LONG_PTR)pData);
 			pData->scrollPos = 0;
 			pData->totalContentHeight = 0;
-			/*{
-				Message m;
-				m.messageHeight = -1;
-				
-				m.authorID = 336697008356327444;
-				m.id = 1;
-				m.text = 1061838579795505162;
-				m.deleted = false;
-				m.text = "Hello from Ripcord to Talk32 on Windows XP.";
-				pData->messages.push_back(m);
-				
-				m.authorID = 115110682399080453;
-				m.id = 826573208504369182;
-				m.text = "hiii 👋";
-				pData->messages.push_back(m);
-				
-				m.authorID = 580427633351720961;
-				m.id = 776250970556334090;
-				m.text = "D:";
-				pData->messages.push_back(m);
-				
-				m.authorID = 156948140510019586;
-				m.id = 776250656700891167;
-				m.text = "😳so you wanna kiss me @fern. ? 😳and then fall in love and we can be dates on dating and date and then you wanna meet each other’s parents... we decide to then get married! we will have a destination marriage in iceland and our honeymoon will be in a cute [hotel] and we will [passionately hug] on a large heartshaped bed and i will become pregnant and when we go to the hospital to check the gender we will find out that its TWINS! one boy and one girl 😱. We name one something basic like jenny and the other one something like theodorkus! I decided its time that we move to a more quiet town and it starts stressing us out and i start drinking and we fall into a loveless marriage and you will start cheating on me with a coworker. One night i will stay up waiting for you to come home... when you get home it is 4 am and i yell at you asking where you’ve been and you tell me you’ve been with your [girlfriend] and that you no longer love me and want to leave me! i start crying and throwing my wine at you. you get angry and hit me, i am shocked, i stare at you and walk upstairs and lie down in bed. you then decide its best to sleep on the couch and call your coworker to talk about the incident. i start walking downstairs to apologize and hear you, you start snickering and tell your new lover that i am a crazy [woman]! OUT OF RAGE I RUN TO THE KITCHEN FOR A KNIFE!! You hear me and turn around confused. I grab the knife and you run over to stop me, you grab me and try to console me and when you try to take the knife i stab you in the neck multiple times! I start crying more and remember the phone, she was listening... i hang up and start shaking. and then she calls the cops and i go to prison :(";
-				pData->messages.push_back(m);
-				
-				m.authorID = 226733221499371521;
-				m.id = 776250578384060457;
-				m.text = "Why did you rat out traka";
-				pData->messages.push_back(m);
-				
-				m.authorID = 196483655453900801;
-				m.id = 776242881698070588;
-				m.text = "do you think the authorities got traka? he really was spilling secrets, and i did put in an FBI tip...";
-				pData->messages.push_back(m);
-				
-				m.authorID = 545703069783031828;
-				m.id = 776234616586502175;
-				m.text = "[image]";
-				pData->messages.push_back(m);
-				
-				m.authorID = 115110682399080453;
-				m.id = 776226754125234227;
-				m.text = "Went to the future.or somrttjkng";
-				pData->messages.push_back(m);
-				
-				m.authorID = 115110682399080453;
-				m.id = 776226712107220992;
-				m.text = "Teskaplex probably lile";
-				pData->messages.push_back(m);
-				
-				m.authorID = 580427633351720961;
-				m.id = 776224643500605441;
-				m.text = "Sarah died in vain";
-				pData->messages.push_back(m);
-				
-				m.authorID = 580427633351720961;
-				m.id = 776224643500605441;
-				m.text = "Trakaplex died for our sins";
-				pData->messages.push_back(m);
-			}*/
 			
 			return TRUE;
 		break;
@@ -4428,7 +4385,7 @@ uint64_t GetSystemTimeAsUnixTime() {
 }
 
 void addMessageToDataModel(uint64_t serverID, uint64_t channelID, uint64_t messageID, uint64_t authorID, string content) {
-	cout << endl << "addMessageToDataModel(server " << serverID << ", channel " << channelID << ", message " << messageID << ", authorID " << authorID;
+	//cout << endl << "addMessageToDataModel(server " << serverID << ", channel " << channelID << ", message " << messageID << ", authorID " << authorID;
 	ServerListItem *server = NULL;
 	Message m;
 	m.id = messageID;
@@ -4447,13 +4404,13 @@ void addMessageToDataModel(uint64_t serverID, uint64_t channelID, uint64_t messa
 		//We have to do an exhaustive search for the channel
 		bool foundChannel = false;
 		for (auto it = begin(globalServerListData->dataModel); it != end(globalServerListData->dataModel) && !foundChannel; ++it) { //Servers
-			cout << endl << "server " << it->id;
+			//cout << endl << "server " << it->id;
 			for (auto it2 = begin(it->dataModel); it2 != end(it->dataModel) && !foundChannel; ++it2) { //Categories
-				cout << endl << "\tcategory " << it2->id;
+				//cout << endl << "\tcategory " << it2->id;
 				for (auto it3 = begin(it2->channels); it3 != end(it2->channels) && !foundChannel; ++it3) { //Channels
-					cout << endl << "\t\tchannel " << it3->id;
+					//cout << endl << "\t\tchannel " << it3->id;
 					if (it3->id == channelID) {
-						cout << endl << "\t\t\tAdding message";
+						//cout << endl << "\t\t\tAdding message";
 						it3->messages.push_back(m);
 						recalculateTotalMessageHeight(true);
 						foundChannel = true;
@@ -4527,6 +4484,8 @@ void addMessageToLog(GenericValue<UTF8<>> *messageJSON) {
 		if (it->id == stoull((*messageJSON)["guild_id"].GetString())) {
 			cout << endl << "Logging message \"" << (*messageJSON)["content"].GetString() << "\"";
 			sqlite3_stmt *stmt;
+			
+			//Save the message to the "messages" table
 			string query = "INSERT OR IGNORE INTO messages(ID, messageType, channelID, content, timestamp, timestampEdited, authorID, pinned) VALUES(?,?,?,?,?,?,?,?);";
 			sqlite3_prepare_v2(it->db, query.c_str(), query.length(), &stmt, NULL);
 			sqlite3_bind_int64(stmt, 1, stoull((*messageJSON)["id"].GetString()));
@@ -4552,6 +4511,32 @@ void addMessageToLog(GenericValue<UTF8<>> *messageJSON) {
 			sqlite3_bind_int(stmt, 8, (*messageJSON)["pinned"].GetBool() ? 1 : 0);
 			if (sqlite3_step(stmt) == SQLITE_DONE) it->lastMessageTimestamp = GetSystemTimeAsUnixTime();//(containsEditedTimestamp ? utf8_to_wstring(((*messageJSON)["edited_timestamp"]).GetString()) : utf8_to_wstring(((*messageJSON)["timestamp"]).GetString()));
 			
+			//Save the user details to the "users" table
+			query = "INSERT OR REPLACE INTO users(ID, name, discriminator, isBot, avatarUrl, date) VALUES(?,?,?,?,?,?);";
+			sqlite3_prepare_v2(it->db, query.c_str(), query.length(), &stmt, NULL);
+			uint64_t authorID = stoull((*messageJSON)["author"]["id"].GetString());
+			string username = ((*messageJSON)["author"]["username"]).GetString();
+			int discriminator = stoi((*messageJSON)["author"]["discriminator"].GetString());
+			string avatar = ((*messageJSON)["author"]["avatar"]).GetString();
+			sqlite3_bind_int64(stmt, 1, authorID);
+			sqlite3_bind_text(stmt, 2, username.c_str(), username.length(), SQLITE_STATIC);
+			sqlite3_bind_int64(stmt, 3, discriminator);
+			bool isBot = (*messageJSON)["author"].FindMember("bot") != (*messageJSON)["author"].MemberEnd() && (*messageJSON)["author"]["bot"].IsBool() && (*messageJSON)["author"]["bot"].GetBool();
+			sqlite3_bind_int(stmt, 4, isBot ? 1 : 0);
+			sqlite3_bind_text(stmt, 5, avatar.c_str(), avatar.length(), SQLITE_STATIC);
+			string avatarTimestamp = (containsEditedTimestamp ? ((*messageJSON)["edited_timestamp"]).GetString() : ((*messageJSON)["timestamp"]).GetString());
+			sqlite3_bind_text(stmt, 6, avatarTimestamp.c_str(), avatarTimestamp.length(), SQLITE_STATIC);
+			sqlite3_step(stmt);
+			//Download the avatar
+			if (!it->assetFolder.empty()) {
+				DownloadManagerJob dmj;
+				dmj.url = L"https://cdn.discordapp.com/avatars/" + to_wstring(authorID) + L"/" + utf8_to_wstring(avatar) + L".png";
+				dmj.filename = L"avatars\\" + to_wstring(authorID) + L"_" + utf8_to_wstring(avatar) + L".png";
+				dmj.outputFolder = it->assetFolder;
+				dmj.replace = false;
+				downloadManagerJobs.push_back(dmj);
+			}
+			
 			break;
 		}
 	}
@@ -4572,6 +4557,26 @@ void markMessageAsDeletedInLog(GenericValue<UTF8<>> *messageJSON) {
 		}
 	}
 }
+
+void addServerToLog(uint64_t id, string name, string icon, string timestamp) {
+	//Check if the user is logging this server
+	for (auto it = begin(config.loggingServers); it != end(config.loggingServers); ++it) {
+		if (it->id == id) {
+			cout << endl << "Adding server " << id << "";
+			sqlite3_stmt *stmt;
+			string query = "INSERT OR IGNORE INTO server(ID, name, iconUrl, date) VALUES(?,?,?,?);";
+			sqlite3_prepare_v2(it->db, query.c_str(), query.length(), &stmt, NULL);
+			sqlite3_bind_int64(stmt, 1, id);
+			sqlite3_bind_text(stmt, 2, name.c_str(), name.length(), SQLITE_STATIC);
+			sqlite3_bind_text(stmt, 3, icon.c_str(), icon.length(), SQLITE_STATIC);
+			sqlite3_bind_text(stmt, 4, timestamp.c_str(), timestamp.length(), SQLITE_STATIC);
+			if (sqlite3_step(stmt) == SQLITE_DONE) it->lastMessageTimestamp = GetSystemTimeAsUnixTime();
+			
+			break;
+		}
+	}
+}
+
 bool loggingSettingsDialogIsOpen = false;
 HWND loggingSettingsDialogHWND = NULL;
 void loggingSettings(void* param) {
@@ -4683,7 +4688,7 @@ void refreshLoggingServerList(HWND loggingServerListHWND) {
 		lvItem.lParam = (LPARAM)&(*it);
 		SendMessage(loggingServerListHWND, LVM_INSERTITEM, idx, (LPARAM)&lvItem);
 		
-		//We have to store the server ID as a string because Windows XP won't show it if we try to pass to_wstring()
+		//We have to store the server ID and "last update" timestamp as strings because Windows XP won't show them properly if we try to pass methods that return a wstring
 		if (it->idString.empty()) it->idString = to_wstring(it->id);
 		lvItem.pszText = (LPWSTR)it->idString.c_str();
 		lvItem.iSubItem = 1;
