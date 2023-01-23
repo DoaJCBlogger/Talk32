@@ -101,6 +101,8 @@ wstring padZeros(uint64_t i, int length);
 bool fileExists(LPCWSTR filename);
 bool folderExists(LPCWSTR foldername);
 void addServerToLog(uint64_t id, string name, string icon, string currentTimestamp);
+void addChannelToLog(uint64_t serverID, uint64_t id, string name, uint64_t category, string topic, int channelType, string timestamp);
+void addCategoryToLog(uint64_t serverID, uint64_t id, string name, string timestamp);
 
 //Contains a font fix provided by "Christopher Janzon" on stackoverflow.com
 //https://stackoverflow.com/a/17075471
@@ -360,6 +362,7 @@ struct ContentAreaData {
 };
 
 const string opcodes[] = {"Dispatch", "Heartbeat", "Identify", "Presence Update", "Voice State Update", "", "Resume", "Reconnect", "Request Guild Members", "Invalid Session", "Hello", "Heartbeat ACK"};
+//const string channelTypes[] = {"GuildText", "DM", "GuildVoice", "GroupDM", "GuildCategory", "GuildAnnouncement", "", "", "", "", "AnnouncementThread", "PublicThread", "PrivateThread", "GuildStageVoice", "GuildDirectory", "GuildForum"};
 
 const char* tableNames[7] = {"messages", "attachments", "embeds", "users", "server", "channels", "categories"};
 const char* createTableQueries[7] = {
@@ -901,6 +904,7 @@ static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *use
 											c.topic = (guildObject["channels"][i].FindMember("topic") != guildObject["channels"][i].MemberEnd() && !guildObject["channels"][i]["topic"].IsNull()) ? guildObject["channels"][i]["topic"].GetString() : string("");
 											c.voiceChannel = (channelType == 2);
 											defaultCG.channels.push_back(c);
+											addChannelToLog(server.id, c.id, c.name, 0, c.topic, channelType, wstring_to_utf8(currentTimestamp));
 											continue;
 										}
 										
@@ -917,8 +921,10 @@ static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *use
 											c.topic = (guildObject["channels"][j].FindMember("topic") != guildObject["channels"][j].MemberEnd() && !guildObject["channels"][j]["topic"].IsNull()) ? guildObject["channels"][j]["topic"].GetString() : string("");
 											c.voiceChannel = (channelType == 2);
 											cg.channels.push_back(c);
+											addChannelToLog(server.id, c.id, c.name, categoryID, c.topic, channelType, wstring_to_utf8(currentTimestamp));
 										} //for (int j = 0; j < channelsArraySize; j++) {
 										server.dataModel.push_back(cg);
+										addCategoryToLog(server.id, cg.id, cg.name, wstring_to_utf8(currentTimestamp));
 										cg.channels.clear();
 									} //for (int i = 0; i < channelsArraySize; i++) {
 									if (!defaultCG.channels.empty()) server.dataModel.push_back(defaultCG);
@@ -4570,6 +4576,45 @@ void addServerToLog(uint64_t id, string name, string icon, string timestamp) {
 			sqlite3_bind_text(stmt, 2, name.c_str(), name.length(), SQLITE_STATIC);
 			sqlite3_bind_text(stmt, 3, icon.c_str(), icon.length(), SQLITE_STATIC);
 			sqlite3_bind_text(stmt, 4, timestamp.c_str(), timestamp.length(), SQLITE_STATIC);
+			if (sqlite3_step(stmt) == SQLITE_DONE) it->lastMessageTimestamp = GetSystemTimeAsUnixTime();
+			
+			break;
+		}
+	}
+}
+
+void addChannelToLog(uint64_t serverID, uint64_t id, string name, uint64_t category, string topic, int channelType, string timestamp) {
+	//Check if the user is logging this server
+	for (auto it = begin(config.loggingServers); it != end(config.loggingServers); ++it) {
+		if (it->id == serverID) {
+			cout << endl << "Adding channel " << id << "";
+			sqlite3_stmt *stmt;
+			string query = "INSERT OR IGNORE INTO channels(ID, type, categoryID, name, topic, date) VALUES(?,?,?,?,?,?);";
+			sqlite3_prepare_v2(it->db, query.c_str(), query.length(), &stmt, NULL);
+			sqlite3_bind_int64(stmt, 1, id);
+			sqlite3_bind_int(stmt, 2, channelType);
+			sqlite3_bind_int64(stmt, 3, category);
+			sqlite3_bind_text(stmt, 4, name.c_str(), name.length(), SQLITE_STATIC);
+			sqlite3_bind_text(stmt, 5, topic.c_str(), topic.length(), SQLITE_STATIC);
+			sqlite3_bind_text(stmt, 6, timestamp.c_str(), timestamp.length(), SQLITE_STATIC);
+			if (sqlite3_step(stmt) == SQLITE_DONE) it->lastMessageTimestamp = GetSystemTimeAsUnixTime();
+			
+			break;
+		}
+	}
+}
+
+void addCategoryToLog(uint64_t serverID, uint64_t id, string name, string timestamp) {
+	//Check if the user is logging this server
+	for (auto it = begin(config.loggingServers); it != end(config.loggingServers); ++it) {
+		if (it->id == serverID) {
+			cout << endl << "Adding category " << id << "";
+			sqlite3_stmt *stmt;
+			string query = "INSERT OR IGNORE INTO categories(ID, name, date) VALUES(?,?,?);";
+			sqlite3_prepare_v2(it->db, query.c_str(), query.length(), &stmt, NULL);
+			sqlite3_bind_int64(stmt, 1, id);
+			sqlite3_bind_text(stmt, 2, name.c_str(), name.length(), SQLITE_STATIC);
+			sqlite3_bind_text(stmt, 3, timestamp.c_str(), timestamp.length(), SQLITE_STATIC);
 			if (sqlite3_step(stmt) == SQLITE_DONE) it->lastMessageTimestamp = GetSystemTimeAsUnixTime();
 			
 			break;
