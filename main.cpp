@@ -643,7 +643,8 @@ bool loadOrCreateConfig() {
 				ls.name = utf8_to_wstring(configDocument["logging_servers"][i]["name"].GetString());
 				string loggingServerFilename = configDocument["logging_servers"][i]["filename"].GetString();
 				ls.filename = utf8_to_wstring(loggingServerFilename);
-				string loggingServerAssetFolder = configDocument["logging_servers"][i]["assets"].GetString();
+				string loggingServerAssetFolder = "";
+				if (configDocument["logging_servers"][i].FindMember("assets") != configDocument["logging_servers"][i].MemberEnd() && configDocument["logging_servers"][i]["assets"].IsString()) loggingServerAssetFolder = configDocument["logging_servers"][i]["assets"].GetString();
 				ls.assetFolder = utf8_to_wstring(loggingServerAssetFolder);
 				if (ls.assetFolder.at(i) != L'\\') ls.assetFolder += L"\\";
 				wstring avatarsFolder = utf8_to_wstring(loggingServerAssetFolder) + L"avatars";
@@ -806,6 +807,9 @@ static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *use
 		}
 		
 		responseJSON.Parse(string((char*)websocketFragment + objectStart, (objectEnd - objectStart) + 1/*websocketFragmentSize*/).c_str());
+		if (((objectEnd - objectStart) + 1) < 8192) {
+			cout << endl << "JSON object: " << string((char*)websocketFragment + objectStart, (objectEnd - objectStart) + 1/*websocketFragmentSize*/);
+		}
 		logFile << endl << "JSON object: " << string((char*)websocketFragment + objectStart, (objectEnd - objectStart) + 1);
 		if (responseJSON.HasParseError()) {
 			/*wstring error_msg = L"Error parsing config file (at position ";
@@ -972,7 +976,7 @@ static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *use
 						size_t sent;
 						EnterCriticalSection(&discordGatewayCurlObjectCS);
 						string heartbeatObject = "{\"op\":1,\"d\":" + (latestDiscordSequenceNumber >= 0 ? to_string(latestDiscordSequenceNumber) : string("null")) + "}";
-						curl_ws_send(curl, heartbeatObject.c_str(), heartbeatObject.length(), &sent, 4096, CURLWS_TEXT);
+						try { curl_ws_send(curl, heartbeatObject.c_str(), heartbeatObject.length(), &sent, 4096, CURLWS_TEXT); } catch (...) {}
 						LeaveCriticalSection(&discordGatewayCurlObjectCS);
 					}
 					break;
@@ -983,7 +987,7 @@ static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *use
 						cout << endl << "Sending op 1000 to close the connection";
 						EnterCriticalSection(&discordGatewayCurlObjectCS);
 						string json = "{\"op\":1000,\"d\":" + (latestDiscordSequenceNumber >= 0 ? to_string(latestDiscordSequenceNumber) : string("null")) + "}";
-						curl_ws_send(curl, json.c_str(), json.length(), &sent, 4096, CURLWS_TEXT);
+						try { curl_ws_send(curl, json.c_str(), json.length(), &sent, 4096, CURLWS_TEXT); } catch (...) {}
 						LeaveCriticalSection(&discordGatewayCurlObjectCS);
 						cout << endl << "Sent op 1000";
 						//Stop the heartbeat thread
@@ -1022,7 +1026,7 @@ static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *use
 							json = "{\"op\": 6, \"d\": {\"token\": \"" + wstring_to_utf8(config.authToken) + "\", \"session_id\": \"" + session_id + "\", \"seq\": " + to_string(latestDiscordSequenceNumber) + "}}";
 						}
 						EnterCriticalSection(&discordGatewayCurlObjectCS);
-						curl_ws_send(curl, json.c_str(), json.length(), &sent, 4096, CURLWS_TEXT);
+						try { curl_ws_send(curl, json.c_str(), json.length(), &sent, 4096, CURLWS_TEXT); } catch (...) {}
 						LeaveCriticalSection(&discordGatewayCurlObjectCS);
 					}
 					break;
@@ -1091,7 +1095,7 @@ void heartbeatThread(void* param) {
 		}
 		heartbeatObject << "}";
 		while (!TryEnterCriticalSection(&discordGatewayCurlObjectCS) && !shouldStopHeartbeats) {}
-		if (!shouldStopHeartbeats) curl_ws_send(curl, heartbeatObject.str().c_str(), heartbeatObject.str().length(), &sent, 4096, CURLWS_TEXT);
+		if (!shouldStopHeartbeats) { try { curl_ws_send(curl, heartbeatObject.str().c_str(), heartbeatObject.str().length(), &sent, 4096, CURLWS_TEXT); } catch (...) {} }
 		LeaveCriticalSection(&discordGatewayCurlObjectCS);
 		for (int i = 0; i < seconds && !shouldStopHeartbeats; i++) Sleep(1000);
 	}
@@ -4494,7 +4498,8 @@ void addMessageToLog(GenericValue<UTF8<>> *messageJSON) {
 			//Save the message to the "messages" table
 			string query = "INSERT OR IGNORE INTO messages(ID, messageType, channelID, content, timestamp, timestampEdited, authorID, pinned) VALUES(?,?,?,?,?,?,?,?);";
 			sqlite3_prepare_v2(it->db, query.c_str(), query.length(), &stmt, NULL);
-			sqlite3_bind_int64(stmt, 1, stoull((*messageJSON)["id"].GetString()));
+			uint64_t id = stoull((*messageJSON)["id"].GetString());
+			sqlite3_bind_int64(stmt, 1, id);
 			int type = (*messageJSON)["type"].GetInt();
 			string typeString = to_string((long long)type);
 			if (type == 0) {
@@ -4503,45 +4508,56 @@ void addMessageToLog(GenericValue<UTF8<>> *messageJSON) {
 				typeString = "ChannelPinnedMessage";
 			}
 			sqlite3_bind_text(stmt, 2, typeString.c_str(), typeString.length(), SQLITE_STATIC);
-			sqlite3_bind_int64(stmt, 3, stoull((*messageJSON)["channel_id"].GetString()));
+			uint64_t channelID = stoull((*messageJSON)["channel_id"].GetString());
+			sqlite3_bind_int64(stmt, 3, channelID);
 			string content = (*messageJSON)["content"].GetString();
 			sqlite3_bind_text(stmt, 4, content.c_str(), content.length(), SQLITE_STATIC);
-			sqlite3_bind_text(stmt, 5, string(((*messageJSON)["timestamp"]).GetString()).c_str(), string(((*messageJSON)["timestamp"]).GetString()).length(), SQLITE_STATIC);
+			string timestamp = ((*messageJSON)["timestamp"]).GetString();
+			sqlite3_bind_text(stmt, 5, timestamp.c_str(), timestamp.length(), SQLITE_STATIC);
 			bool containsEditedTimestamp = (*messageJSON).FindMember("edited_timestamp") != (*messageJSON).MemberEnd() && !(*messageJSON)["edited_timestamp"].IsNull();
+			string editedTimestamp = "";
 			if (containsEditedTimestamp) {
-				sqlite3_bind_text(stmt, 6, string(((*messageJSON)["edited_timestamp"]).GetString()).c_str(), string(((*messageJSON)["edited_timestamp"]).GetString()).length(), SQLITE_STATIC);
+				editedTimestamp = ((*messageJSON)["edited_timestamp"]).GetString();
+				sqlite3_bind_text(stmt, 6, editedTimestamp.c_str(), editedTimestamp.length(), SQLITE_STATIC);
 			} else {
 				sqlite3_bind_null(stmt, 6);
 			}
-			sqlite3_bind_int64(stmt, 7, stoull((*messageJSON)["author"]["id"].GetString()));
+			uint64_t authorID = stoull((*messageJSON)["author"]["id"].GetString());
+			sqlite3_bind_int64(stmt, 7, authorID);
 			sqlite3_bind_int(stmt, 8, (*messageJSON)["pinned"].GetBool() ? 1 : 0);
 			if (sqlite3_step(stmt) == SQLITE_DONE) it->lastMessageTimestamp = GetSystemTimeAsUnixTime();//(containsEditedTimestamp ? utf8_to_wstring(((*messageJSON)["edited_timestamp"]).GetString()) : utf8_to_wstring(((*messageJSON)["timestamp"]).GetString()));
 			
 			//Save the user details to the "users" table
 			query = "INSERT OR REPLACE INTO users(ID, name, discriminator, isBot, avatarUrl, date) VALUES(?,?,?,?,?,?);";
 			sqlite3_prepare_v2(it->db, query.c_str(), query.length(), &stmt, NULL);
-			uint64_t authorID = stoull((*messageJSON)["author"]["id"].GetString());
 			string username = ((*messageJSON)["author"]["username"]).GetString();
 			int discriminator = stoi((*messageJSON)["author"]["discriminator"].GetString());
-			string avatar = ((*messageJSON)["author"]["avatar"]).GetString();
+			boolean containsAvatar = (*messageJSON)["author"].FindMember("avatar") != (*messageJSON)["author"].MemberEnd() && !(*messageJSON)["author"]["avatar"].IsNull();
 			sqlite3_bind_int64(stmt, 1, authorID);
 			sqlite3_bind_text(stmt, 2, username.c_str(), username.length(), SQLITE_STATIC);
 			sqlite3_bind_int64(stmt, 3, discriminator);
 			bool isBot = (*messageJSON)["author"].FindMember("bot") != (*messageJSON)["author"].MemberEnd() && (*messageJSON)["author"]["bot"].IsBool() && (*messageJSON)["author"]["bot"].GetBool();
 			sqlite3_bind_int(stmt, 4, isBot ? 1 : 0);
-			sqlite3_bind_text(stmt, 5, avatar.c_str(), avatar.length(), SQLITE_STATIC);
-			string avatarTimestamp = (containsEditedTimestamp ? ((*messageJSON)["edited_timestamp"]).GetString() : ((*messageJSON)["timestamp"]).GetString());
+			if (containsAvatar) {
+				string avatar = ((*messageJSON)["author"]["avatar"]).GetString();
+				sqlite3_bind_text(stmt, 5, avatar.c_str(), avatar.length(), SQLITE_STATIC);
+				
+				//Download the avatar
+				if (!it->assetFolder.empty()) {
+					DownloadManagerJob dmj;
+					dmj.url = L"https://cdn.discordapp.com/avatars/" + to_wstring(authorID) + L"/" + utf8_to_wstring(avatar) + L".png";
+					dmj.filename = L"avatars\\" + to_wstring(authorID) + L"_" + utf8_to_wstring(avatar) + L".png";
+					dmj.outputFolder = it->assetFolder;
+					dmj.replace = false;
+					downloadManagerJobs.push_back(dmj);
+				}
+			} else {
+				sqlite3_bind_null(stmt, 5);
+			}
+			string avatarTimestamp = (containsEditedTimestamp ? editedTimestamp : timestamp);
 			sqlite3_bind_text(stmt, 6, avatarTimestamp.c_str(), avatarTimestamp.length(), SQLITE_STATIC);
 			sqlite3_step(stmt);
-			//Download the avatar
-			if (!it->assetFolder.empty()) {
-				DownloadManagerJob dmj;
-				dmj.url = L"https://cdn.discordapp.com/avatars/" + to_wstring(authorID) + L"/" + utf8_to_wstring(avatar) + L".png";
-				dmj.filename = L"avatars\\" + to_wstring(authorID) + L"_" + utf8_to_wstring(avatar) + L".png";
-				dmj.outputFolder = it->assetFolder;
-				dmj.replace = false;
-				downloadManagerJobs.push_back(dmj);
-			}
+			
 			
 			break;
 		}
