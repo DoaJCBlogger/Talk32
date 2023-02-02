@@ -4559,6 +4559,8 @@ void addMessageToLog(GenericValue<UTF8<>> *messageJSON) {
 
 void markMessageAsDeletedInLog(GenericValue<UTF8<>> *messageJSON) {
 	//Check if the user is logging this server
+	//Skip DM's
+	if ((*messageJSON).FindMember("guild_id") == (*messageJSON).MemberEnd()) return;
 	for (auto it = begin(config.loggingServers); it != end(config.loggingServers); ++it) {
 		if (it->id == stoull((*messageJSON)["guild_id"].GetString())) {
 			cout << endl << "Deleting message " << (*messageJSON)["id"].GetString() << "";
