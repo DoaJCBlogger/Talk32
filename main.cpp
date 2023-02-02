@@ -4480,6 +4480,8 @@ void markChannelAsUnread(uint64_t serverID, uint64_t channelID) {
 void addMessageToLog(GenericValue<UTF8<>> *messageJSON) {
 	//Skip messages without content
 	if ((*messageJSON).FindMember("content") == (*messageJSON).MemberEnd()) return;
+	//Skip DM's
+	if ((*messageJSON).FindMember("guild_id") == (*messageJSON).MemberEnd()) return;
 	//Check if the user is logging this server
 	for (auto it = begin(config.loggingServers); it != end(config.loggingServers); ++it) {
 		if (it->id == stoull((*messageJSON)["guild_id"].GetString())) {
