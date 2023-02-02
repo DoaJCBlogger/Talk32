@@ -199,7 +199,6 @@ bool RectangleWidthHeight(HDC hdc, int x, int y, int w, int h);
 bool RoundRectWidthHeight(HDC hdc, int x, int y, int w, int h, int rw, int rh);
 void SetRectXYWidthHeight(RECT* r, long x, long y, long w, long h);
 unsigned int getMessageHeight(unsigned int, string);
-size_t urlWriteCallback(char*, size_t, size_t, void*);
 HWND hwndMainWin, statusBar, authTokenBox, messageField, httpResponseLabel, loginBtn, hwndServerList, hwndLeftSidebar, hwndContentArea, offlineBtn;
 HBRUSH windowBGBrush, mainGrayColorBrush, messageFieldBGBrush, discordBlueBtnBrush, discordBlueBtnHoverBrush, discordBlueBtnDownBrush, serverListColorBrush, sidebarColorBrush, serverListHoverColor, serverListSelectedColor;// = (HBRUSH)GetStockObject(WHITE_BRUSH);
 std::string data;
@@ -3503,14 +3502,6 @@ void AddMenus(HWND hwndMainWin) {
 	AppendMenuW(hMenuBar, MF_POPUP, (UINT_PTR)hSettingsMenu, L"Settings");
 	AppendMenuW(hMenuBar, MF_POPUP, (UINT_PTR)hHelpMenu, L"Help");
 	SetMenu(hwndMainWin, hMenuBar);
-}
-
-size_t urlWriteCallback(char* buf, size_t size, size_t nmemb, void* up) {
-	int actualSize = size * nmemb;
-	for (int c = 0; c < actualSize; c++) {
-		data.push_back(buf[c]);
-	}
-	return actualSize;
 }
 
 bool CALLBACK SetFont(HWND child, LPARAM font){
