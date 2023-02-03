@@ -760,7 +760,6 @@ unsigned long receivedWebsocketFramesWithinFragment = 0;
 bool heartbeatThreadIsActive = false;
 static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *userp) {
 	size_t realsize = size * nmemb;
-	logFile.write((char*)data, realsize);
 	std::string str = "Received WebSocket data (";
 	str += std::to_string((long long)realsize);
 	str += " bytes): ";
@@ -4480,11 +4479,19 @@ void markChannelAsUnread(uint64_t serverID, uint64_t channelID) {
 void addMessageToLog(GenericValue<UTF8<>> *messageJSON) {
 	//Skip messages without content
 	if ((*messageJSON).FindMember("content") == (*messageJSON).MemberEnd()) return;
-	//Skip DM's
-	if ((*messageJSON).FindMember("guild_id") == (*messageJSON).MemberEnd()) return;
+	uint64_t guildID = 0;
+	if ((*messageJSON).FindMember("guild_id") != (*messageJSON).MemberEnd() && (*messageJSON)["guild_id"].IsString()) {
+		guildID = stoull((*messageJSON)["guild_id"].GetString());
+	} else if ((*messageJSON).FindMember("author") != (*messageJSON).MemberEnd() && (*messageJSON)["author"].FindMember("guild_id") != (*messageJSON)["author"].MemberEnd() && (*messageJSON)["author"]["guild_id"].IsString()) {
+		//Sometimes when messages are edited, the guild ID will be in the "author" object
+		guildID = stoull((*messageJSON)["author"]["guild_id"].GetString());
+	} else {
+		//Skip DM's
+		return;
+	}
 	//Check if the user is logging this server
 	for (auto it = begin(config.loggingServers); it != end(config.loggingServers); ++it) {
-		if (it->id == stoull((*messageJSON)["guild_id"].GetString())) {
+		if (it->id == guildID) {
 			cout << endl << "Logging message \"" << (*messageJSON)["content"].GetString() << "\"";
 			sqlite3_stmt *stmt;
 			
