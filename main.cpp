@@ -645,7 +645,7 @@ bool loadOrCreateConfig() {
 				string loggingServerAssetFolder = "";
 				if (configDocument["logging_servers"][i].FindMember("assets") != configDocument["logging_servers"][i].MemberEnd() && configDocument["logging_servers"][i]["assets"].IsString()) loggingServerAssetFolder = configDocument["logging_servers"][i]["assets"].GetString();
 				ls.assetFolder = utf8_to_wstring(loggingServerAssetFolder);
-				if (ls.assetFolder.at(i) != L'\\') ls.assetFolder += L"\\";
+				if (ls.assetFolder.at(ls.assetFolder.size() - 1) != L'\\') ls.assetFolder += L"\\";
 				wstring avatarsFolder = utf8_to_wstring(loggingServerAssetFolder) + L"avatars";
 				if (!folderExists(avatarsFolder.c_str())) {
 					if (!SUCCEEDED(CreateDirectory(avatarsFolder.c_str(), NULL))) {
