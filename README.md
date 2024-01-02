@@ -1,7 +1,7 @@
 # Talk32
 A lightweight unofficial Discord client that uses only Win32, GDI, and GDI+ for rendering instead of Chrome/Electron. To support modern TLS on Windows XP it uses OpenSSL and provides its own root certificates.
 
-This project is compiled with version 7.1 of the Windows SDK.
+This project is compiled with version 7.1 of the Windows SDK. You can use Visual C++ 2010, or [Dibya's fork of Clang 17.01 for Windows XP/2003](http://designingonajuicycup.com.s3-website.us-east-2.amazonaws.com/downloads/?prefix=downloads/llvm/). "talk32.exe" in the release folder is built with Clang.
 
 ![Screenshot 1](docs/screenshot1.webp)
 
@@ -19,8 +19,9 @@ This project is compiled with version 7.1 of the Windows SDK.
 1. Open the Windows SDK 7.1 command prompt.
 2. Run the command **setenv /xp /x86 /release**
 3. Change to the repository folder with **cd [folder path]**
-4. Run **build.bat**
+4. Run **build_[msvc/clang].bat**
 5. The result will be a file called talk32.exe
 
 #### Known issues
 - Random painting issues
+- Crashes on Windows 8.1

@@ -56,6 +56,9 @@ using namespace rapidjson;
 
 #include "sqlite\sqlite3.h"
 
+#include "cryptopp890\cryptlib.h"
+#include "cryptopp890\sha3.h"
+
 #include "emoji.h"
 
 LRESULT CALLBACK leftSidebarProc(HWND, UINT, WPARAM, LPARAM);
@@ -86,6 +89,7 @@ void drawServerIcon(HDC hdc, Gdiplus::Bitmap* icon, int x, int y, int roundStyle
 void GetRoundRectPath(Gdiplus::GraphicsPath *pPath, Gdiplus::Rect r, int dia);
 uint64_t GetSystemTimeAsUnixTime();
 std::string wstring_to_utf8(const std::wstring&);
+std::wstring utf8_to_wstring(const std::string&);
 curl_socket_t my_opensocketfunc(void*, curlsocktype, struct curl_sockaddr*);
 void addMessageToDataModel(uint64_t serverID, uint64_t channelID, uint64_t messageID, uint64_t authorID, string content);
 void deleteMessageFromDataModel(uint64_t serverID, uint64_t channelID, uint64_t messageID);
@@ -103,6 +107,8 @@ bool folderExists(LPCWSTR foldername);
 void addServerToLog(uint64_t id, string name, string icon, string currentTimestamp);
 void addChannelToLog(uint64_t serverID, uint64_t id, string name, uint64_t category, string topic, int channelType, string timestamp);
 void addCategoryToLog(uint64_t serverID, uint64_t id, string name, string timestamp);
+void loadUserIcon(uint64_t userID, wstring filename);
+void addUserToGlobalUserList(uint64_t userID, wstring username, wstring display_name);
 
 //Contains a font fix provided by "Christopher Janzon" on stackoverflow.com
 //https://stackoverflow.com/a/17075471
@@ -256,6 +262,7 @@ COLORREF messageTextColor = RGB(220, 221, 222);
 COLORREF deletedMessageTextColor = RGB(237, 66, 69);
 wstring localAppDataPath;
 wstring configFilePath;
+wstring cacheDir;
 
 int scrollPosition = 0;
 unsigned int contentAreaWidth;
@@ -313,7 +320,8 @@ struct ServerListData {
 };
 
 struct User {
-	wstring name;
+	wstring username;
+	wstring displayName;
 	uint64_t discriminator;
 	uint64_t id;
 	Gdiplus::Bitmap* hbmIcon;
@@ -321,6 +329,7 @@ struct User {
 
 vector<ServerListItem> globalServerIconList;
 vector<User> globalUserList;
+CRITICAL_SECTION globalUserListCS;
 struct ContentAreaData *globalContentAreaData;
 struct LeftSidebarData *globalLeftSidebarData;
 CRITICAL_SECTION globalLeftSidebarDataCS;
@@ -363,15 +372,16 @@ struct ContentAreaData {
 const string opcodes[] = {"Dispatch", "Heartbeat", "Identify", "Presence Update", "Voice State Update", "", "Resume", "Reconnect", "Request Guild Members", "Invalid Session", "Hello", "Heartbeat ACK"};
 //const string channelTypes[] = {"GuildText", "DM", "GuildVoice", "GroupDM", "GuildCategory", "GuildAnnouncement", "", "", "", "", "AnnouncementThread", "PublicThread", "PrivateThread", "GuildStageVoice", "GuildDirectory", "GuildForum"};
 
-const char* tableNames[7] = {"messages", "attachments", "embeds", "users", "server", "channels", "categories"};
-const char* createTableQueries[7] = {
-	"CREATE TABLE IF NOT EXISTS \"messages\" (\"ID\" BIGINT NOT NULL,\"channelID\" INTEGER,\"content\" TEXT,\"messageType\" TEXT,\"timestamp\" TEXT,\"timestampEdited\" TEXT,\"authorID\" INTEGER,\"pinned\" INTEGER, \"deleted\" INTEGER, PRIMARY KEY(\"ID\", \"channelID\", \"timestampEdited\"));",
+const char* tableNames[8] = {"messages", "attachments", "embeds", "users", "server", "channels", "categories", "urls"};
+const char* createTableQueries[8] = {
+	"CREATE TABLE IF NOT EXISTS \"messages\" (\"ID\" BIGINT NOT NULL,\"channelID\" INTEGER,\"referenceMessage\" BIGINT,\"referenceChannel\" BIGINT,\"referenceServer\" BIGINT,\"content\" TEXT,\"messageType\" TEXT,\"timestamp\" TEXT,\"timestampEdited\" TEXT,\"authorID\" INTEGER,\"pinned\" INTEGER, \"deleted\" INTEGER, PRIMARY KEY(\"ID\", \"channelID\", \"timestampEdited\"));",
 	"CREATE TABLE IF NOT EXISTS \"attachments\" (\"ID\" INTEGER UNIQUE,\"messageID\" INTEGER,\"idx\" INTEGER,\"filename\" TEXT,\"url\" TEXT,\"filesize\" INTEGER, \"deleted\" INTEGER, PRIMARY KEY(\"ID\",\"messageID\"));",
 	"CREATE TABLE IF NOT EXISTS \"embeds\" (\"messageID\" TEXT,\"title\" TEXT,\"url\" TEXT,\"description\" TEXT,\"author\" TEXT,\"authorUrl\" TEXT,\"authorIconUrl\" TEXT,\"idx\" INTEGER,\"thumbnailUrl\" TEXT,PRIMARY KEY(\"messageID\",\"idx\"));",
 	"CREATE TABLE IF NOT EXISTS \"users\" (\"ID\" TEXT,\"name\" TEXT,\"discriminator\" INTEGER,\"isBot\" INTEGER,\"avatarUrl\" TEXT,\"date\" TEXT,PRIMARY KEY(\"ID\",\"name\",\"discriminator\",\"avatarUrl\"));",
 	"CREATE TABLE IF NOT EXISTS \"server\" (\"ID\" BIGINT NOT NULL,\"name\" TEXT,\"iconUrl\" TEXT,\"date\" TEXT,PRIMARY KEY(\"ID\",\"name\",\"iconUrl\"));",
 	"CREATE TABLE IF NOT EXISTS \"channels\" (\"ID\" BIGINT NOT NULL,\"type\" TEXT,\"categoryID\" BIGINT,\"name\" TEXT,\"topic\" TEXT,\"date\" TEXT,PRIMARY KEY(\"ID\",\"categoryID\",\"name\",\"topic\"));",
-	"CREATE TABLE IF NOT EXISTS \"categories\" (\"ID\" BIGINT NOT NULL,\"name\" TEXT,\"date\" TEXT,PRIMARY KEY(\"ID\",\"name\"));"
+	"CREATE TABLE IF NOT EXISTS \"categories\" (\"ID\" BIGINT NOT NULL,\"name\" TEXT,\"date\" TEXT,PRIMARY KEY(\"ID\",\"name\"));",
+	"CREATE TABLE IF NOT EXISTS \"urls\" (\"ID\" TEXT, \"url\" TEXT, \"filename\" TEXT, \"filesize\" INTEGER, \"hash\" TEXT, \"compressedHash\" TEXT,PRIMARY KEY(\"ID\",\"filename\",\"filesize\",\"hash\"));"
 };
 
 void heartbeatThread(void* param);
@@ -382,6 +392,9 @@ struct DownloadManagerJob {
 	wstring outputFolder;
 	wstring filename;
 	boolean replace;
+	sqlite3* db;
+	uint64_t objectID;
+	int objectType;
 };
 vector<DownloadManagerJob> downloadManagerJobs;
 wstring downloadManagerCurrentURL;
@@ -389,26 +402,129 @@ wstring downloadManagerProgress;
 CRITICAL_SECTION downloadManagerJobsCS;
 CRITICAL_SECTION downloadManagerStatusCS;
 bool shouldStopDownloadManager = false;
+//FILE *currentDownloadManagerFile;
+CryptoPP::SHA3_256* currentHash = NULL;
+string currentHashString;
+
+unsigned char hexCharacters[] = {'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F'};
+string bytesToHex(string input) {
+	string output = "";
+	
+	for (int i = 0; i < input.length(); i++) {
+		output += hexCharacters[((uint8_t)input.at(i)) >> 4];
+		output += hexCharacters[((uint8_t)input.at(i)) & 15];
+	}
+	
+	return output;
+}
+
+uint64_t downloadManagerCurrentFileSize = 0;
+size_t downloadManagerWriteCallback(char* ptr, size_t size, size_t nmemb, void *userdata) {
+	size_t bytes = size * nmemb;
+	downloadManagerCurrentFileSize += bytes;
+	
+	currentHash->Update((const byte*)ptr, bytes);
+	fwrite(ptr, bytes, 1, (FILE*)userdata);
+	
+	return bytes;
+}
 void downloadManagerThread(void* param) {
 	CURL *downloadManagerCurlObject = curl_easy_init();
 	if (downloadManagerCurlObject) {
 		while (!shouldStopDownloadManager) {
 			if (downloadManagerJobs.size() > 0) {
-				if (downloadManagerJobs.at(0).outputFolder.at(downloadManagerJobs.at(0).outputFolder.length() - 1) != L'\\') downloadManagerJobs.at(0).outputFolder += L"\\";
-				wstring path = wstring(downloadManagerJobs.at(0).outputFolder + downloadManagerJobs.at(0).filename);
-				if (downloadManagerJobs.at(0).replace || (!downloadManagerJobs.at(0).replace && !fileExists(path.c_str()))) {
-					cout << endl << "Downloading " << wstring_to_utf8(downloadManagerJobs.at(0).url) << " to " << wstring_to_utf8(path);
-					FILE *file = fopen(wstring_to_utf8(wstring(downloadManagerJobs.at(0).outputFolder + downloadManagerJobs.at(0).filename)).c_str(), "wb");
-					if (file) {
-						curl_easy_setopt(downloadManagerCurlObject, CURLOPT_URL, wstring_to_utf8(downloadManagerJobs.at(0).url).c_str());
+				currentHashString = "";
+				//For some reason, it crashes if we try to concatenate L"" and the uint64_t Unix timestamp value so we have to use to_wstring()
+				wstring UTCTimeFilename = to_wstring(GetSystemTimeAsUnixTime());
+				auto dmj = begin(downloadManagerJobs);
+				if (dmj->outputFolder.at(dmj->outputFolder.length() - 1) != L'\\') dmj->outputFolder += L"\\";
+				//If it's a server icon or user avatar, then we need to download it to the cache folder first and then copy it to the assets folder if the server is being logged.
+				//Otherwise, we can just download it directly to the assets folder
+				wstring initialOutputFolder = cacheDir;
+				if (dmj->objectType == 0 /* server icon */) {
+					initialOutputFolder += L"server_icons\\";
+				} else if (dmj->objectType == 1 /* user avatar */) {
+					initialOutputFolder += L"user_avatars\\";
+				} else {
+					initialOutputFolder = dmj->outputFolder;
+				}
+				wstring path = wstring(dmj->outputFolder + dmj->filename);
+				//if (dmj->replace || (!dmj->replace && !fileExists(path.c_str()))) {
+					cout << endl << "Downloading " << wstring_to_utf8(dmj->url) << " to " << wstring_to_utf8(path);
+					FILE *currentDownloadManagerFile = fopen(wstring_to_utf8(wstring(initialOutputFolder + ((dmj->objectType >= 2 /* not a server icon or user avatar */) ? dmj->filename : UTCTimeFilename))).c_str(), "wb");
+					if (currentDownloadManagerFile) {
+						downloadManagerCurrentFileSize = 0;
+						curl_easy_setopt(downloadManagerCurlObject, CURLOPT_URL, wstring_to_utf8(dmj->url).c_str());
 						curl_easy_setopt(downloadManagerCurlObject, CURLOPT_USERAGENT, wstring_to_utf8(getUserAgent()).c_str());
 						curl_easy_setopt(downloadManagerCurlObject, CURLOPT_CAINFO, "cacert.pem");
 						curl_easy_setopt(downloadManagerCurlObject, CURLOPT_VERBOSE, 1L);
-						curl_easy_setopt(downloadManagerCurlObject, CURLOPT_WRITEDATA, file);
+						//We use CURLOPT_WRITEFUNCTION instead of just CURLOPT_WRITEDATA so we can hash the file as it's downloaded
+						curl_easy_setopt(downloadManagerCurlObject, CURLOPT_WRITEFUNCTION, downloadManagerWriteCallback);
+						curl_easy_setopt(downloadManagerCurlObject, CURLOPT_WRITEDATA, currentDownloadManagerFile);
 						CURLcode res = curl_easy_perform(downloadManagerCurlObject);
-						fclose(file);
+						fclose(currentDownloadManagerFile);
+						
+						currentHashString.resize(currentHash->DigestSize());
+						currentHash->Final((byte*)&currentHashString[0]);
+						currentHashString = bytesToHex(currentHashString);
+						
+						/*wstring tmp = dmj->url;
+						tmp += L", serverIcon=";
+						if (dmj->objectType == 0) {
+							tmp += L"true";
+						} else {
+							tmp += L"false";
+						}
+						MessageBoxW(NULL, tmp.c_str(), L"", MB_OK);*/
+						
+						if (dmj->objectType >= 2 /* Not a server icon or user avatar */) {
+							if (!fileExists(wstring(dmj->outputFolder + utf8_to_wstring(currentHashString)).c_str())) {
+								//The file wasn't downloaded yet so we have to rename it
+								MoveFile(wstring(dmj->outputFolder + UTCTimeFilename).c_str(), wstring(dmj->outputFolder + utf8_to_wstring(currentHashString)).c_str());
+							} else {
+								//Delete the file if it was already downloaded
+								DeleteFile(wstring(dmj->outputFolder + UTCTimeFilename).c_str());
+							}
+						} else {
+							//Copy the icon to the assets folder if this server is being logged
+							if (!dmj->filename.empty()) CopyFile(wstring(initialOutputFolder + dmj->filename).c_str(), wstring(dmj->outputFolder + utf8_to_wstring(currentHashString)).c_str(), true);
+							
+							//We need to load the file as a bitmap
+							if (dmj->objectType == 0 /* server icon */) {
+								EnterCriticalSection(&globalServerListDataCS);
+								for (vector<ServerListItem>::iterator it = globalServerListData->dataModel.begin(); it != globalServerListData->dataModel.end(); ++it) {
+									if (it->id == dmj->objectID) {
+										if (it->hbmIcon != NULL) delete it->hbmIcon;
+										it->hbmIcon = new Gdiplus::Bitmap(wstring(dmj->outputFolder + dmj->filename).c_str(), false);
+										break;
+									}
+								}
+								LeaveCriticalSection(&globalServerListDataCS);
+							} else {
+								//This is a user avatar so we have to save it in the cache folder and load it as an HBITMAP
+								loadUserIcon(dmj->objectID, initialOutputFolder + dmj->filename);
+							}
+						}
+						
+						if (dmj->db != NULL) {
+							//Save a record in the database that connects the URL to the hash
+							sqlite3_stmt *stmt;
+							//"ID" TEXT, "url" TEXT, "filename" TEXT, "filesize" INTEGER, "hash" TEXT, "compressedHash" TEXT
+							string query = "INSERT OR IGNORE INTO urls(ID, url, filename, filesize, hash) VALUES(?,?,?,?,?);";
+							sqlite3_prepare_v2(dmj->db, query.c_str(), query.length(), &stmt, NULL);
+							string SQLObjectID = to_string(dmj->objectID);
+							string SQLURL = wstring_to_utf8(dmj->url);
+							string SQLFilename = wstring_to_utf8(dmj->filename);
+							string SQLFileSize = to_string(downloadManagerCurrentFileSize);
+							sqlite3_bind_text(stmt, 1, SQLObjectID.c_str(), SQLObjectID.length(), SQLITE_STATIC);
+							sqlite3_bind_text(stmt, 2, SQLURL.c_str(), SQLURL.length(), SQLITE_STATIC);
+							sqlite3_bind_text(stmt, 3, SQLFilename.c_str(), SQLFilename.length(), SQLITE_STATIC);
+							sqlite3_bind_text(stmt, 4, SQLFileSize.c_str(), SQLFileSize.length(), SQLITE_STATIC);
+							sqlite3_bind_text(stmt, 5, currentHashString.c_str(), currentHashString.length(), SQLITE_STATIC);
+							sqlite3_step(stmt);
+						}
 					}
-				}
+				//}
 				downloadManagerJobs.erase(begin(downloadManagerJobs));
 			} else {
 				Sleep(500);
@@ -548,6 +664,9 @@ bool loadOrCreateConfig() {
 		}
 	}
 	
+	//Create the cache\server_icons folder
+	CreateDirectory(wstring(localAppDataPath + L"cache\\server_icons\\").c_str(), NULL);
+	
 	if (shouldCreateConfigFile) {
 		ofstream configFile(configFilePath.c_str(), ios::binary);
 		if (!configFile) {
@@ -651,6 +770,14 @@ bool loadOrCreateConfig() {
 					if (!SUCCEEDED(CreateDirectory(avatarsFolder.c_str(), NULL))) {
 						wstring error_msg = L"Error: could not create avatars directory at ";
 						error_msg += avatarsFolder;
+						MessageBox(NULL, error_msg.c_str(), L"Error", MB_OK | MB_ICONERROR);
+					}
+				}
+				wstring attachmentsFolder = utf8_to_wstring(loggingServerAssetFolder) + L"attachments";
+				if (!folderExists(attachmentsFolder.c_str())) {
+					if (!SUCCEEDED(CreateDirectory(attachmentsFolder.c_str(), NULL))) {
+						wstring error_msg = L"Error: could not create attachments directory at ";
+						error_msg += attachmentsFolder;
 						MessageBox(NULL, error_msg.c_str(), L"Error", MB_OK | MB_ICONERROR);
 					}
 				}
@@ -766,7 +893,7 @@ static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *use
 	str += string((char*)data, realsize);
 	logFile << endl << str;
 	
-	curl_ws_frame* frameInfo = curl_ws_meta(curl);
+	const curl_ws_frame* frameInfo = curl_ws_meta(curl);
 	//cout << endl << "flags=" << frameInfo->flags << ", offset=" << frameInfo->offset << " (actual offset " << websocketFragmentCurrentIdx << "), bytesleft=" << frameInfo->bytesleft;
 	if (receivedWebsocketFramesWithinFragment == 0) {
 		free(websocketFragment);
@@ -853,13 +980,17 @@ static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *use
 							//Load the servers and channels
 							if (responseJSON["d"]["guilds"].IsArray()) {
 								//Clear the channel list
-								//Lock the data model so we the UI thread doesn't try to draw it
+								//Lock the data model so the UI thread doesn't try to draw it
 								EnterCriticalSection(&globalServerListDataCS);
+								//We have to wait to start downloading the server icons because if they get downloaded before the servers are in the global data model, there won't be anywhere to put the HBITMAP
+								vector<DownloadManagerJob> tempDownloadManagerJobs;
 								//cout << endl << "Entered the critical section";
 								globalLeftSidebarData->dataModel.clear();
 								Value& guildsArray = responseJSON["d"]["guilds"];
 								long long guildsArraySize = guildsArray.Size();
+								if (guildsArraySize > 0) globalServerListData->dataModel.clear(); //Don't duplicate the server list if Discord sends it again
 								ServerListItem server;
+								server.hbmIcon = NULL;
 								ChannelGroup cg;
 								ChannelGroup defaultCG;
 								ChannelItem c;
@@ -883,10 +1014,21 @@ static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *use
 									server.id = stoull(guildObject["id"].GetString());
 									server.name = guildObject["name"].GetString();
 									server.unread = false;
+									server.hbmIcon = NULL;
 									string icon = "";
 									if (!guildObject["icon"].IsNull()) {
-										icon = guildObject["icon"].GetString();
-										server.hbmIcon = new Gdiplus::Bitmap(wstring(localAppDataPath + L"cache\\server_icons\\" + utf8_to_wstring(icon) + L".png").c_str(), false);
+										/*icon = guildObject["icon"].GetString();
+										server.hbmIcon = new Gdiplus::Bitmap(wstring(localAppDataPath + L"cache\\server_icons\\" + utf8_to_wstring(icon) + L".png").c_str(), false);*/
+										//Download the server icon
+										DownloadManagerJob dmj;
+										dmj.url = L"https://cdn.discordapp.com/icons/" + to_wstring(server.id) + L"/" + utf8_to_wstring(guildObject["icon"].GetString()) + L".png";
+										dmj.filename = utf8_to_wstring(guildObject["icon"].GetString()) + L".png";
+										dmj.outputFolder = wstring(localAppDataPath + L"cache\\server_icons\\");
+										dmj.replace = false;
+										dmj.db = NULL;
+										dmj.objectID = server.id;
+										dmj.objectType == 0 /* server icon */;
+										tempDownloadManagerJobs.push_back(dmj);
 									} else {
 										server.hbmIcon = new Gdiplus::Bitmap(wstring(localAppDataPath + L"cache\\server_icons\\null.png").c_str(), false);;
 									}
@@ -934,8 +1076,13 @@ static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *use
 									defaultCG.channels.clear();
 									server.dataModel.clear();
 								}
+								//We can start downloading the server icons now
+								for (int i = 0; i < tempDownloadManagerJobs.size(); i++) {
+									downloadManagerJobs.push_back(tempDownloadManagerJobs[i]);
+								}
+								tempDownloadManagerJobs.clear();
 								//Unlock the data model
-							LeaveCriticalSection(&globalServerListDataCS);
+								LeaveCriticalSection(&globalServerListDataCS);
 							}
 						} else if (t.compare("MESSAGE_CREATE") == 0) {
 							//cout << endl << "MESSAGE_CREATE: \"" << responseJSON["d"]["content"].GetString() << "\"";
@@ -946,7 +1093,6 @@ static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *use
 							if (channelID == selectedChannel) {
 								//Add the message to the current data model if the channel is selected
 								addMessageToDataModel(serverID, channelID, stoull(responseJSON["d"]["id"].GetString()), stoull(responseJSON["d"]["author"]["id"].GetString()), responseJSON["d"]["content"].GetString());
-								
 							} else {
 								//If the message is for a channel that isn't selected, then we should just mark it as unread
 								//The message will be loaded anyway with the POST request when the user clicks it
@@ -1107,19 +1253,35 @@ int initializeTables(sqlite3 *db) {
 	char *zErrMsg = 0;
 	int rc;
 	
-	for (int i = 0; i < 7; i++) {
+	for (int i = 0; i < 8; i++) {
 		rc = sqlite3_exec(db, createTableQueries[i], sqlite3Callback, 0, &zErrMsg);
 		if (rc != SQLITE_OK) {cout << endl << "Error while creating table \"" << tableNames[i] << "\": " << zErrMsg; return 1;}
 	}
 	return 0;
 }
 
-int /*WINAPI WinM*/main(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
+int /*WINAPI WinM*/main(
+	#ifndef __clang__
+	HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow
+	#else
+	int argc, char** argv
+	#endif
+) {
+	#ifdef __clang__
+	HINSTANCE hInstance = NULL;
+	HINSTANCE hPrevInstance = NULL;
+	int nCmdShow = 0;
+	#endif
+	//currentHash = new CryptoPP::SHA3_256();
+	static CryptoPP::SHA3_256 currentHashObject;
+	currentHash = &currentHashObject;
+	
 	memset(emojiIsLoaded, 0, (EMOJI_COUNT / 8) + ((EMOJI_COUNT % 8) != 0 ? 1 : 0));
 	globalLeftSidebarData = new LeftSidebarData();
 	InitializeCriticalSection(&discordGatewayCurlObjectCS);
 	InitializeCriticalSection(&globalLeftSidebarDataCS);
 	InitializeCriticalSection(&globalServerListDataCS);
+	InitializeCriticalSection(&globalUserListCS);
 	globalServerListData = new ServerListData();
 	/*DownloadManagerJob dmj;
 	dmj.url = L"https://cdn.discordapp.com/icons/807245652072857610/dc1ae5f4eaa70301d97a4e530d3099e1.png";
@@ -1162,7 +1324,7 @@ int /*WINAPI WinM*/main(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCm
 	MSG  msg ;
 	WNDCLASS wc = {0};
 	wc.lpszClassName = TEXT("Talk32Mainwin");
-	wc.hInstance     = hInstance ;
+	wc.hInstance     = hInstance;
 	windowBGBrush = CreateSolidBrush(mainGrayColor);
 	wc.hbrBackground = windowBGBrush;
 	wc.lpfnWndProc   = WndProc ;
@@ -1237,6 +1399,7 @@ int /*WINAPI WinM*/main(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCm
 	}
 
 	delete globalServerListData;
+	DeleteCriticalSection(&globalUserListCS);
 	DeleteCriticalSection(&globalServerListDataCS);
 	DeleteCriticalSection(&globalLeftSidebarDataCS);
 	DeleteCriticalSection(&discordGatewayCurlObjectCS);
@@ -1244,6 +1407,7 @@ int /*WINAPI WinM*/main(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCm
 	deleteBitmaps();
 	Gdiplus::GdiplusShutdown(gPT);
 	DeleteDC(tempHDC);
+	//delete currentHash;
 	return (int) msg.wParam;
 }
 
@@ -1541,7 +1705,7 @@ bool login(bool clearAuthPage, bool offlineMode) {
 		_beginthread(websocketThread, 0, NULL);
 	}
 
-	wstring cacheDir = config.dataDir + L"cache\\";
+	cacheDir = config.dataDir + L"cache\\";
 	if (!folderExists(cacheDir.c_str())) {
 		MessageBox(NULL, L"Error: no cache folder", L"", MB_OK);
 		return false;
@@ -1640,6 +1804,7 @@ bool login(bool clearAuthPage, bool offlineMode) {
 			Value user;
 
 			//bool shouldAddEntry;
+			EnterCriticalSection(&globalUserListCS);
 			globalUserList.clear();
 			User u;
 			Gdiplus::Color serverListBG; //TODO: possibly change this
@@ -1651,7 +1816,12 @@ bool login(bool clearAuthPage, bool offlineMode) {
 
 				//Get the name
 				if (!(user.HasMember("name") && user["name"].IsString())) continue;
-				u.name = utf8_to_wstring(user["name"].GetString());
+				u.username = utf8_to_wstring(user["name"].GetString());
+				if ((user.HasMember("nickname") && user["nickname"].IsString())) {
+					u.displayName = utf8_to_wstring(user["nickname"].GetString());
+				} else {
+					u.displayName = u.username;
+				}
 				
 				//Get the discriminator
 				if (!(user.HasMember("discriminator") && user["discriminator"].IsUint64())) continue;
@@ -1671,6 +1841,7 @@ bool login(bool clearAuthPage, bool offlineMode) {
 				
 				globalUserList.push_back(u);
 			}
+			LeaveCriticalSection(&globalUserListCS);
 			user.FindMember("id");
 		}
 	}
@@ -3579,22 +3750,27 @@ void copyUnicodeText(wstring text) {
 
 wstring getUserName(uint64_t id) {
 	for (unsigned int i = 0; i < globalUserList.size(); i++) {
-		if (globalUserList.at(i).id == id) return globalUserList.at(i).name;
+		if (globalUserList.at(i).id == id) return globalUserList.at(i).username;
 	}
 	return L"Unknown user " + to_wstring((long long)id);
 }
 
 wstring getUserNameWithDiscriminator(uint64_t id) {
 	for (unsigned int i = 0; i < globalUserList.size(); i++) {
-		if (globalUserList.at(i).id == id) return globalUserList.at(i).name + L" #" + to_wstring((long long)globalUserList.at(i).discriminator);
+		if (globalUserList.at(i).id == id) return globalUserList.at(i).username + L" #" + to_wstring((long long)globalUserList.at(i).discriminator);
 	}
 	return L"Unknown user " + to_wstring((long long)id);
 }
 
 Gdiplus::Bitmap* getUserAvatar(uint64_t id) {
+	EnterCriticalSection(&globalUserListCS);
 	for (unsigned int i = 0; i < globalUserList.size(); i++) {
-		if (globalUserList.at(i).id == id) return globalUserList.at(i).hbmIcon;
+		if (globalUserList.at(i).id == id) {
+			LeaveCriticalSection(&globalUserListCS);
+			return globalUserList.at(i).hbmIcon;
+		}
 	}
+	LeaveCriticalSection(&globalUserListCS);
 	return NULL;
 }
 
@@ -4434,11 +4610,14 @@ void deleteMessageFromDataModel(uint64_t serverID, uint64_t channelID, uint64_t 
 	} else */{
 		//We have to do an exhaustive search for the channel
 		bool foundMessage = false;
+		//string message = "Deleting message, server ";message += to_string(serverID);message += ", Channel ";message += to_string(channelID);message += ", Message ";message += to_string(messageID);MessageBoxA(NULL, message.c_str(), "", MB_OK);
 		for (auto it = begin(globalServerListData->dataModel); it != end(globalServerListData->dataModel) && !foundMessage; ++it) { //Servers
+			if (it->id != serverID) continue;
 			for (auto it2 = begin(it->dataModel); it2 != end(it->dataModel) && !foundMessage; ++it2) { //Categories
 				for (auto it3 = begin(it2->channels); it3 != end(it2->channels) && !foundMessage; ++it3) { //Channels
+					if (it3->id != channelID) continue;
 					for (auto it4 = begin(it3->messages); it4 != end(it3->messages) && !foundMessage; ++it4) { //Messages
-						if (it4->id == channelID) {
+						if (it4->id == messageID) {
 							cout << endl << "\t\t\tDeleting message";
 							it4->deleted = true;
 							foundMessage = true;
@@ -4477,6 +4656,13 @@ void markChannelAsUnread(uint64_t serverID, uint64_t channelID) {
 }
 
 void addMessageToLog(GenericValue<UTF8<>> *messageJSON) {
+	//Add the user to the global user list
+	if ((*messageJSON).FindMember("author") != (*messageJSON).MemberEnd()) {
+		wstring username = utf8_to_wstring((*messageJSON)["author"]["username"].GetString());
+		wstring display_name = (*messageJSON)["author"]["global_name"].IsString() ? utf8_to_wstring((*messageJSON)["author"]["global_name"].GetString()) : username;
+		addUserToGlobalUserList(stoull((*messageJSON)["author"]["id"].GetString()), username, display_name);
+	}
+	
 	//Skip messages without content
 	if ((*messageJSON).FindMember("content") == (*messageJSON).MemberEnd()) return;
 	uint64_t guildID = 0;
@@ -4496,7 +4682,7 @@ void addMessageToLog(GenericValue<UTF8<>> *messageJSON) {
 			sqlite3_stmt *stmt;
 			
 			//Save the message to the "messages" table
-			string query = "INSERT OR IGNORE INTO messages(ID, messageType, channelID, content, timestamp, timestampEdited, authorID, pinned) VALUES(?,?,?,?,?,?,?,?);";
+			string query = "INSERT OR IGNORE INTO messages(ID, messageType, channelID, content, timestamp, timestampEdited, authorID, pinned, referenceMessage, referenceChannel, referenceServer) VALUES(?,?,?,?,?,?,?,?,?,?,?);";
 			sqlite3_prepare_v2(it->db, query.c_str(), query.length(), &stmt, NULL);
 			uint64_t id = stoull((*messageJSON)["id"].GetString());
 			sqlite3_bind_int64(stmt, 1, id);
@@ -4525,7 +4711,80 @@ void addMessageToLog(GenericValue<UTF8<>> *messageJSON) {
 			uint64_t authorID = stoull((*messageJSON)["author"]["id"].GetString());
 			sqlite3_bind_int64(stmt, 7, authorID);
 			sqlite3_bind_int(stmt, 8, (*messageJSON)["pinned"].GetBool() ? 1 : 0);
+			string referenceMessage, referenceChannel, referenceServer;
+			if ((*messageJSON).FindMember("reference") != (*messageJSON).MemberEnd() && !(*messageJSON)["reference"].IsNull() && (*messageJSON)["reference"].IsObject() &&
+				((*messageJSON)["reference"]).FindMember("messageId") != ((*messageJSON)["reference"]).MemberEnd() && !((*messageJSON)["reference"]["messageId"]).IsNull() && ((*messageJSON)["reference"]["messageId"]).IsString()) {
+				referenceMessage = (*messageJSON)["reference"]["messageId"].GetString();
+			}
+			if ((*messageJSON).FindMember("reference") != (*messageJSON).MemberEnd() && !(*messageJSON)["reference"].IsNull() && (*messageJSON)["reference"].IsObject() &&
+				(*messageJSON)["reference"].FindMember("channelId") != ((*messageJSON)["reference"]).MemberEnd() && !(*messageJSON)["reference"]["channelId"].IsNull() && (*messageJSON)["reference"]["channelId"].IsString()) {
+				referenceChannel = (*messageJSON)["reference"]["channelId"].GetString();
+			}
+			if ((*messageJSON).FindMember("reference") != (*messageJSON).MemberEnd() && !(*messageJSON)["reference"].IsNull() && (*messageJSON)["reference"].IsObject() &&
+				(*messageJSON)["reference"].FindMember("guildId") != ((*messageJSON)["reference"]).MemberEnd() && !(*messageJSON)["reference"]["guildId"].IsNull() && (*messageJSON)["reference"]["guildId"].IsString()) {
+				referenceServer = (*messageJSON)["reference"]["guildId"].GetString();
+			}
+			if (!referenceMessage.empty()) {
+				sqlite3_bind_text(stmt, 9, referenceMessage.c_str(), referenceMessage.length(), SQLITE_STATIC);
+			} else {
+				sqlite3_bind_null(stmt, 9);
+			}
+			if (!referenceChannel.empty()) {
+				sqlite3_bind_text(stmt, 10, referenceChannel.c_str(), referenceChannel.length(), SQLITE_STATIC);
+			} else {
+				sqlite3_bind_null(stmt, 10);
+			}
+			if (!referenceServer.empty()) {
+				sqlite3_bind_text(stmt, 11, referenceServer.c_str(), referenceServer.length(), SQLITE_STATIC);
+			} else {
+				sqlite3_bind_null(stmt, 11);
+			}
 			if (sqlite3_step(stmt) == SQLITE_DONE) it->lastMessageTimestamp = GetSystemTimeAsUnixTime();//(containsEditedTimestamp ? utf8_to_wstring(((*messageJSON)["edited_timestamp"]).GetString()) : utf8_to_wstring(((*messageJSON)["timestamp"]).GetString()));
+			
+			//Save the attachments to the "attachments" table and download them
+			if ((*messageJSON).FindMember("attachments") != (*messageJSON).MemberEnd() && !(*messageJSON)["attachments"].IsNull() && (*messageJSON)["attachments"].IsArray()) {
+				Value& attachmentsArray = (*messageJSON)["attachments"];
+				long long arraySize = attachmentsArray.Size();
+				
+				for (int i = 0; i < arraySize; i++) {
+					//(*messageJSON)["attachments"][i]
+					string attachmentID = (*messageJSON)["attachments"][i]["id"].GetString();
+					string attachmentFilename = (*messageJSON)["attachments"][i]["filename"].GetString();
+					uint64_t attachmentSize = (*messageJSON)["attachments"][i]["size"].GetUint64();
+					string attachmentURL = (*messageJSON)["attachments"][i]["url"].GetString();
+					/*string message = attachmentID;
+					message += ", ";
+					message += attachmentFilename;
+					message += ", ";
+					message += to_string(attachmentSize);
+					message += " bytes, ";
+					message += attachmentURL;
+					MessageBoxA(NULL, message.c_str(), "", MB_OK);*/
+					
+					if (!it->assetFolder.empty()) {
+						DownloadManagerJob dmj;
+						dmj.url = utf8_to_wstring(attachmentURL);
+						dmj.filename = utf8_to_wstring(attachmentFilename);
+						dmj.outputFolder = it->assetFolder + L"attachments\\";
+						dmj.replace = false;
+						dmj.db = it->db;
+						dmj.objectID = stoull(attachmentID);
+						dmj.objectType == 2 /* attachment (file dragged into the chat) */;
+						downloadManagerJobs.push_back(dmj);
+					}
+					
+					//"CREATE TABLE IF NOT EXISTS \"attachments\" (\"ID\" INTEGER UNIQUE,\"messageID\" INTEGER,\"idx\" INTEGER,\"filename\" TEXT,\"url\" TEXT,\"filesize\" INTEGER, \"deleted\" INTEGER, PRIMARY KEY(\"ID\",\"messageID\"));",
+					query = "INSERT OR REPLACE INTO attachments(ID, messageID, idx, filename, url, filesize) VALUES(?,?,?,?,?,?);";
+					sqlite3_prepare_v2(it->db, query.c_str(), query.length(), &stmt, NULL);
+					sqlite3_bind_text(stmt, 1, attachmentID.c_str(), attachmentID.length(), SQLITE_STATIC);
+					sqlite3_bind_int64(stmt, 2, id);
+					sqlite3_bind_int64(stmt, 3, i);
+					sqlite3_bind_text(stmt, 4, attachmentFilename.c_str(), attachmentFilename.length(), SQLITE_STATIC);
+					sqlite3_bind_text(stmt, 5, attachmentURL.c_str(), attachmentURL.length(), SQLITE_STATIC);
+					sqlite3_bind_int64(stmt, 6, attachmentSize);
+					sqlite3_step(stmt);
+				}
+			}
 			
 			//Save the user details to the "users" table
 			query = "INSERT OR REPLACE INTO users(ID, name, discriminator, isBot, avatarUrl, date) VALUES(?,?,?,?,?,?);";
@@ -4538,17 +4797,21 @@ void addMessageToLog(GenericValue<UTF8<>> *messageJSON) {
 			sqlite3_bind_int64(stmt, 3, discriminator);
 			bool isBot = (*messageJSON)["author"].FindMember("bot") != (*messageJSON)["author"].MemberEnd() && (*messageJSON)["author"]["bot"].IsBool() && (*messageJSON)["author"]["bot"].GetBool();
 			sqlite3_bind_int(stmt, 4, isBot ? 1 : 0);
+			string avatar = ""; //We have to create this here so it still exists when the query is executed. If we don't, it will use the date
 			if (containsAvatar) {
-				string avatar = ((*messageJSON)["author"]["avatar"]).GetString();
+				avatar = ((*messageJSON)["author"]["avatar"]).GetString();
 				sqlite3_bind_text(stmt, 5, avatar.c_str(), avatar.length(), SQLITE_STATIC);
 				
 				//Download the avatar
 				if (!it->assetFolder.empty()) {
 					DownloadManagerJob dmj;
 					dmj.url = L"https://cdn.discordapp.com/avatars/" + to_wstring(authorID) + L"/" + utf8_to_wstring(avatar) + L".png";
-					dmj.filename = L"avatars\\" + to_wstring(authorID) + L"_" + utf8_to_wstring(avatar) + L".png";
-					dmj.outputFolder = it->assetFolder;
+					dmj.filename = utf8_to_wstring(avatar) + L".png";
+					dmj.outputFolder = it->assetFolder + L"avatars\\";
 					dmj.replace = false;
+					dmj.db = it->db;
+					dmj.objectID = authorID;
+					dmj.objectType = 1 /* avatar */;
 					downloadManagerJobs.push_back(dmj);
 				}
 			} else {
@@ -4766,7 +5029,12 @@ void refreshLoggingServerList(HWND loggingServerListHWND) {
 		lvItem.iSubItem = 3;
 		SendMessage(loggingServerListHWND, LVM_SETITEM, idx, (LPARAM)&lvItem);
 		
-		lvItem.pszText = (it->enabled ? L"Yes" : L"No");
+		//For some reason, we have to use an IF block instead of a ternary operator for Clang
+		if (it->enabled) {
+			lvItem.pszText = L"Yes";
+		} else {
+			lvItem.pszText = L"No";
+		}
 		lvItem.iSubItem = 4;
 		SendMessage(loggingServerListHWND, LVM_SETITEM, idx, (LPARAM)&lvItem);
 		
@@ -4788,4 +5056,49 @@ wstring padZeros(uint64_t i, int length) {
 		for (int j = 0; j < length - retVal.length(); j++) retVal = L"0" + retVal;
 	}
 	return retVal;
+}
+
+void loadUserIcon(uint64_t userID, wstring filename) {
+	EnterCriticalSection(&globalUserListCS);
+	boolean foundUser = false;
+	for (auto it = begin(globalUserList); it != end(globalUserList); ++it) {
+		if (it->id == userID) {
+			if (it->hbmIcon != NULL) delete it->hbmIcon;
+			it->hbmIcon = new Gdiplus::Bitmap(filename.c_str(), false);
+			foundUser = true;
+			break;
+		}
+	}
+	if (!foundUser) {
+		User u;
+		u.id = userID;
+		u.discriminator = 0;
+		u.username = L"Unknown user";
+		u.displayName = L"Unknown user";
+		u.hbmIcon = NULL;
+		globalUserList.push_back(u);
+	}
+	LeaveCriticalSection(&globalUserListCS);
+}
+
+void addUserToGlobalUserList(uint64_t userID, wstring username, wstring display_name) {
+	EnterCriticalSection(&globalUserListCS);
+	
+	boolean foundUser = false;
+	for (auto it = begin(globalUserList); it != end(globalUserList); ++it) {
+		if (it->id == userID) {
+			it->username = username;
+			it->displayName = display_name;
+			foundUser = true;
+			break;
+		}
+	}
+	if (!foundUser) {
+		User u;
+		u.id = userID;
+		u.username = username;
+		u.displayName = display_name;
+		globalUserList.push_back(u);
+	}
+	LeaveCriticalSection(&globalUserListCS);
 }
