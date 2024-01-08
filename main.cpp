@@ -160,7 +160,7 @@ enum MainPageSubLocation {Channel, Friends, DM, GroupDM, Explore};
 Page location = LoginPage;
 MainPageSubLocation sublocation = Friends;
 unsigned long long selectedServer = -1;
-uint64_t selectedChannel = 1052421969297018910;//-1;
+uint64_t selectedChannel = -1;
 unsigned int selectedChannelGroupIdx = 0;
 unsigned int selectedChannelIdxWithinGroup = 0;
 string selectedServerName = "";
@@ -338,6 +338,7 @@ CRITICAL_SECTION globalServerListDataCS;
 vector<Message> *globalMessageList = NULL;
 HDC tempHDC;
 unsigned int messageWidth;
+string DiscordAPIBaseURL = "https://discord.com/api/v10";
 
 /*struct LeftSidebarItem {
 	wstring name;
@@ -454,8 +455,9 @@ void downloadManagerThread(void* param) {
 					FILE *currentDownloadManagerFile = fopen(wstring_to_utf8(wstring(initialOutputFolder + ((dmj->objectType >= 2 /* not a server icon or user avatar */) ? dmj->filename : UTCTimeFilename))).c_str(), "wb");
 					if (currentDownloadManagerFile) {
 						downloadManagerCurrentFileSize = 0;
+						string userAgent = wstring_to_utf8(getUserAgent());
 						curl_easy_setopt(downloadManagerCurlObject, CURLOPT_URL, wstring_to_utf8(dmj->url).c_str());
-						curl_easy_setopt(downloadManagerCurlObject, CURLOPT_USERAGENT, wstring_to_utf8(getUserAgent()).c_str());
+						curl_easy_setopt(downloadManagerCurlObject, CURLOPT_USERAGENT, userAgent.c_str());
 						curl_easy_setopt(downloadManagerCurlObject, CURLOPT_CAINFO, "cacert.pem");
 						curl_easy_setopt(downloadManagerCurlObject, CURLOPT_VERBOSE, 1L);
 						//We use CURLOPT_WRITEFUNCTION instead of just CURLOPT_WRITEDATA so we can hash the file as it's downloaded
@@ -649,6 +651,8 @@ bool loadOrCreateConfig() {
 	localAppDataPath += L"Talk32\\";
 	config.dataDir = localAppDataPath;
 	configFilePath = localAppDataPath + L"\\config.json";
+	wstring cachePath = localAppDataPath + L"cache\\";
+	wstring serverIconCachePath = localAppDataPath + L"cache\\server_icons\\";
 	
 	bool shouldCreateConfigFile = true;
 	if (folderExists(localAppDataPath.c_str())) {
@@ -659,6 +663,24 @@ bool loadOrCreateConfig() {
 		if (!SUCCEEDED(CreateDirectory(localAppDataPath.c_str(), NULL))) {
 			wstring error_msg = L"Error: could not create data directory at ";
 			error_msg += localAppDataPath;
+			MessageBox(NULL, error_msg.c_str(), L"Error", MB_OK | MB_ICONERROR);
+			return false;
+		}
+	}
+	if (!folderExists(cachePath.c_str())) {
+		//The cache folder doesn't exist yet
+		if (!SUCCEEDED(CreateDirectory(cachePath.c_str(), NULL))) {
+			wstring error_msg = L"Error: could not create the cache directory at ";
+			error_msg += cachePath;
+			MessageBox(NULL, error_msg.c_str(), L"Error", MB_OK | MB_ICONERROR);
+			return false;
+		}
+	}
+	if (!folderExists(serverIconCachePath.c_str())) {
+		//The server icon folder doesn't exist yet
+		if (!SUCCEEDED(CreateDirectory(serverIconCachePath.c_str(), NULL))) {
+			wstring error_msg = L"Error: could not create the server icons directory at ";
+			error_msg += serverIconCachePath;
 			MessageBox(NULL, error_msg.c_str(), L"Error", MB_OK | MB_ICONERROR);
 			return false;
 		}
@@ -1042,7 +1064,7 @@ static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *use
 										channelType = guildObject["channels"][i]["type"].GetInt();
 										
 										//Add channels with no category to a default category
-										if ((channelType == 0 /* GUILD_TEXT */ || channelType == 2 /* GUILD_VOICE */) && guildObject["channels"][i].FindMember("parent_id") == guildObject["channels"][i].MemberEnd()) {
+										if ((channelType == 0 /* GUILD_TEXT */ || channelType == 2 /* GUILD_VOICE */) && (guildObject["channels"][i].FindMember("parent_id") == guildObject["channels"][i].MemberEnd() || guildObject["channels"][i]["parent_id"].IsNull())) {
 											c.id = stoull(guildObject["channels"][i]["id"].GetString(), NULL, 10);
 											c.name = guildObject["channels"][i]["name"].GetString();
 											c.topic = (guildObject["channels"][i].FindMember("topic") != guildObject["channels"][i].MemberEnd() && !guildObject["channels"][i]["topic"].IsNull()) ? guildObject["channels"][i]["topic"].GetString() : string("");
@@ -1095,7 +1117,7 @@ static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *use
 								addMessageToDataModel(serverID, channelID, stoull(responseJSON["d"]["id"].GetString()), stoull(responseJSON["d"]["author"]["id"].GetString()), responseJSON["d"]["content"].GetString());
 							} else {
 								//If the message is for a channel that isn't selected, then we should just mark it as unread
-								//The message will be loaded anyway with the POST request when the user clicks it
+								//The message will be loaded anyway with the GET request when the user clicks the channel
 								markChannelAsUnread(serverID, channelID);
 							}
 							//recalculateTotalMessageHeight(true);
@@ -1195,8 +1217,9 @@ void websocketThread(void* param) {
 			MessageBox(NULL, L"Could not open log file", L"Error", MB_OK | MB_ICONERROR);
 		}*/
 		
+		string userAgent = wstring_to_utf8(getUserAgent());
 		curl_easy_setopt(curl, CURLOPT_URL, resume_gateway_url.c_str());
-		curl_easy_setopt(curl, CURLOPT_USERAGENT, wstring_to_utf8(getUserAgent()).c_str());
+		curl_easy_setopt(curl, CURLOPT_USERAGENT, userAgent.c_str());
 		curl_easy_setopt(curl, CURLOPT_OPENSOCKETFUNCTION, my_opensocketfunc);
 		curl_easy_setopt(curl, CURLOPT_CAINFO, "cacert.pem");
 		curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
@@ -1707,12 +1730,13 @@ bool login(bool clearAuthPage, bool offlineMode) {
 
 	cacheDir = config.dataDir + L"cache\\";
 	if (!folderExists(cacheDir.c_str())) {
-		MessageBox(NULL, L"Error: no cache folder", L"", MB_OK);
-		return false;
+		CreateDirectory(wstring(cacheDir).c_str(), NULL);
+		/*MessageBox(NULL, L"Error: no cache folder", L"", MB_OK);
+		return false;*/
 	}
 
 	wstring cacheJson = cacheDir + L"cache.json";
-	if (!fileExists(cacheJson.c_str())) {
+	if (offlineMode && !fileExists(cacheJson.c_str())) {
 		MessageBox(NULL, L"Error: cache.json is missing", L"", MB_OK);
 		return false;
 	}
@@ -3775,6 +3799,8 @@ Gdiplus::Bitmap* getUserAvatar(uint64_t id) {
 }
 
 void submitMessage() {
+	if (selectedChannel == -1) return; //Don't try to send a message if the user hasn't clicked a channel yet.
+	
 	WCHAR buffer[DISCORD_MAX_CHARACTERS];
 	if (!GetWindowText(messageField, buffer, DISCORD_MAX_CHARACTERS)) {
 		//MessageBox(NULL, to_wstring((long long)globalContentAreaData->scrollPos).c_str(), L"", MB_OK);
@@ -3784,13 +3810,33 @@ void submitMessage() {
 	GenericDocument<UTF8<> > d;
 	d.SetObject();
 	Document::AllocatorType& allocator = d.GetAllocator();
-	d.AddMember("content", StringRef(wstring_to_utf8(wstring(buffer)).c_str()), allocator);
+	string messageContent = wstring_to_utf8(wstring(buffer));
+	d.AddMember("content", StringRef(messageContent.c_str()), allocator);
 	StringBuffer strbuf;
 	rapidjson::Writer< StringBuffer, UTF8<> > writer(strbuf);
 	d.Accept(writer);
 	string json = strbuf.GetString();
 	
-	
+	//We have to use a POST request instead of the WebSocket API
+	//POST https://discord.com/api/v10/channels/[channel ID]/messages
+	CURL *sendMessageCurlObject = curl_easy_init();
+	if (sendMessageCurlObject) {
+		string url = DiscordAPIBaseURL + "/channels/" + to_string(selectedChannel) + "/messages";
+		struct curl_slist *headers = NULL;
+		headers = curl_slist_append(headers, "Content-Type: application/json");
+		string authorization = "Authorization: " + wstring_to_utf8(config.authToken);
+		headers = curl_slist_append(headers, authorization.c_str());
+		string userAgent = wstring_to_utf8(getUserAgent());
+		curl_easy_setopt(sendMessageCurlObject, CURLOPT_HTTPHEADER, headers);
+		curl_easy_setopt(sendMessageCurlObject, CURLOPT_URL, url.c_str());
+		curl_easy_setopt(sendMessageCurlObject, CURLOPT_POSTFIELDS, json.c_str());
+		curl_easy_setopt(sendMessageCurlObject, CURLOPT_USERAGENT, userAgent.c_str());
+		curl_easy_setopt(sendMessageCurlObject, CURLOPT_CAINFO, "cacert.pem");
+		curl_easy_setopt(sendMessageCurlObject, CURLOPT_VERBOSE, 1L);
+		curl_easy_perform(sendMessageCurlObject);
+		curl_slist_free_all(headers);
+		curl_easy_cleanup(sendMessageCurlObject);
+	}
 	
 	//RedrawWindow(hwndContentArea, NULL, NULL, NULL);
 	//InvalidateRect(hwndContentArea, NULL, true);
@@ -4568,6 +4614,7 @@ void addMessageToDataModel(uint64_t serverID, uint64_t channelID, uint64_t messa
 	m.authorID = authorID;
 	m.text = content;
 	m.deleted = false;
+	m.messageHeight = 100;
 	/*if (serverID != -1) {
 		//We can speed this up if we know the server ID
 		for (auto it = begin(globalServerListData->dataModel); it != end(globalServerListData->dataModel) && !foundServer; ++it) {
@@ -4578,6 +4625,7 @@ void addMessageToDataModel(uint64_t serverID, uint64_t channelID, uint64_t messa
 		}
 	} else */{
 		//We have to do an exhaustive search for the channel
+		EnterCriticalSection(&globalServerListDataCS);
 		bool foundChannel = false;
 		for (auto it = begin(globalServerListData->dataModel); it != end(globalServerListData->dataModel) && !foundChannel; ++it) { //Servers
 			//cout << endl << "server " << it->id;
@@ -4587,13 +4635,14 @@ void addMessageToDataModel(uint64_t serverID, uint64_t channelID, uint64_t messa
 					//cout << endl << "\t\tchannel " << it3->id;
 					if (it3->id == channelID) {
 						//cout << endl << "\t\t\tAdding message";
-						it3->messages.push_back(m);
+						//it3->messages.push_back(m); //Something causes it to crash when it adds a message that the user sent
 						recalculateTotalMessageHeight(true);
 						foundChannel = true;
 					}
 				}
 			}
 		}
+		LeaveCriticalSection(&globalServerListDataCS);
 	}
 }
 
@@ -4659,7 +4708,7 @@ void addMessageToLog(GenericValue<UTF8<>> *messageJSON) {
 	//Add the user to the global user list
 	if ((*messageJSON).FindMember("author") != (*messageJSON).MemberEnd()) {
 		wstring username = utf8_to_wstring((*messageJSON)["author"]["username"].GetString());
-		wstring display_name = (*messageJSON)["author"]["global_name"].IsString() ? utf8_to_wstring((*messageJSON)["author"]["global_name"].GetString()) : username;
+		wstring display_name = ((*messageJSON)["author"].FindMember("global_name") != (*messageJSON)["author"].MemberEnd() && (*messageJSON)["author"]["global_name"].IsString()) ? utf8_to_wstring((*messageJSON)["author"]["global_name"].GetString()) : username;
 		addUserToGlobalUserList(stoull((*messageJSON)["author"]["id"].GetString()), username, display_name);
 	}
 	
