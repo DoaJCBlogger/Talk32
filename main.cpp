@@ -894,7 +894,7 @@ curl_socket_t my_opensocketfunc(void *clientp, curlsocktype purpose, struct curl
 	return sock=socket(address->family, address->socktype, address->protocol);
 }
 
-ofstream logFile;
+//ofstream logFile;
 int heartbeat_interval = 30000;
 bool shouldStopHeartbeats = false;
 bool APIIsLoggedIn = false;
@@ -913,7 +913,7 @@ static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *use
 	str += std::to_string((long long)realsize);
 	str += " bytes): ";
 	str += string((char*)data, realsize);
-	logFile << endl << str;
+	//logFile << endl << str;
 	
 	const curl_ws_frame* frameInfo = curl_ws_meta(curl);
 	//cout << endl << "flags=" << frameInfo->flags << ", offset=" << frameInfo->offset << " (actual offset " << websocketFragmentCurrentIdx << "), bytesleft=" << frameInfo->bytesleft;
@@ -933,7 +933,7 @@ static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *use
 	}
 	
 	Document responseJSON;
-	logFile << endl << "About to parse JSON data: " << string((char*)websocketFragment, websocketFragmentSize);
+	//logFile << endl << "About to parse JSON data: " << string((char*)websocketFragment, websocketFragmentSize);
 	
 	//For some reason, Discord sometimes sends invalid JSON data with multiple objects like this: {}{}
 	int objectStart = 0;
@@ -948,7 +948,7 @@ static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *use
 			}
 			if (curlyBrackets == 0) {
 				objectEnd = i;
-				logFile << endl << "curlyBrackets is 0 at index " << i;
+				//logFile << endl << "curlyBrackets is 0 at index " << i;
 				break;
 			}
 		}
@@ -957,7 +957,7 @@ static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *use
 		if (((objectEnd - objectStart) + 1) < 8192) {
 			cout << endl << "JSON object: " << string((char*)websocketFragment + objectStart, (objectEnd - objectStart) + 1/*websocketFragmentSize*/);
 		}
-		logFile << endl << "JSON object: " << string((char*)websocketFragment + objectStart, (objectEnd - objectStart) + 1);
+		//logFile << endl << "JSON object: " << string((char*)websocketFragment + objectStart, (objectEnd - objectStart) + 1);
 		if (responseJSON.HasParseError()) {
 			/*wstring error_msg = L"Error parsing config file (at position ";
 			long long offset = (unsigned)responseJSON.GetErrorOffset();
@@ -1207,7 +1207,7 @@ static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *use
 }
 
 void websocketThread(void* param) {
-	logFile = ofstream("C:\\users\\777\\documents\\ws.log", ios::binary);
+	//logFile = ofstream("C:\\users\\777\\documents\\ws.log", ios::binary);
 	curl = curl_easy_init();
 	//struct curl_slist *slist=NULL;
 	if (curl) {
