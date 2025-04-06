@@ -1,6 +1,6 @@
 /*
 	Talk32: A lightweight unofficial Discord client
-	Copyright © 2020 Designing on a juicy cup
+	Copyright © 2020-2025 Designing on a juicy cup
 
 	Talk32 is free software; you can redistribute it and/or
 	modify it under the terms of the GNU General Public License
@@ -909,19 +909,33 @@ unsigned long receivedWebsocketFramesWithinFragment = 0;
 bool heartbeatThreadIsActive = false;
 static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *userp) {
 	size_t realsize = size * nmemb;
-	std::string str = "Received WebSocket data (";
+	//This can cause an access violation if it tries to read a connection status packet like CURLWS_CLOSE
+	/*std::string str = "Received WebSocket data (";
 	str += std::to_string((long long)realsize);
 	str += " bytes): ";
 	str += string((char*)data, realsize);
-	//logFile << endl << str;
+	logFile << endl << str;*/
 	
 	const curl_ws_frame* frameInfo = curl_ws_meta(curl);
-	//cout << endl << "flags=" << frameInfo->flags << ", offset=" << frameInfo->offset << " (actual offset " << websocketFragmentCurrentIdx << "), bytesleft=" << frameInfo->bytesleft;
+	
+	//Don't try to do anything with the message/fragment unless it's text or binary data
+	//If we try to process messages like CURLWS_CLOSE then it will crash
+	if (!(frameInfo->flags & (CURLWS_TEXT | CURLWS_BINARY))) {
+		//We should clear the fragment count if the connection is getting closed
+		//but if this is a PING/PONG/CONT fragment then we should just skip it
+		if (frameInfo->flags & CURLWS_CLOSE) {
+			receivedWebsocketFramesWithinFragment = 0;
+			websocketFragmentCurrentIdx = 0;
+		}
+		return realsize;
+	}
+	
+	cout << endl << "flags=" << frameInfo->flags << ", offset=" << frameInfo->offset << " (actual offset " << websocketFragmentCurrentIdx << "), bytesleft=" << frameInfo->bytesleft;
 	if (receivedWebsocketFramesWithinFragment == 0) {
 		free(websocketFragment);
 		websocketFragment = (char*)malloc(realsize + frameInfo->bytesleft);
 		websocketFragmentSize = realsize + frameInfo->bytesleft;
-		//cout << endl << "WebSocket fragment size: " << websocketFragmentSize;
+		cout << endl << "WebSocket fragment size: " << websocketFragmentSize;
 	}
 	memcpy(websocketFragment + websocketFragmentCurrentIdx, data, realsize);
 	//cout << endl << "Copied " << realsize << " bytes to offset " << websocketFragmentCurrentIdx;
@@ -933,6 +947,7 @@ static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *use
 	}
 	
 	Document responseJSON;
+	cout << endl << "About to parse JSON data (length=" << websocketFragmentSize << ")";
 	//logFile << endl << "About to parse JSON data: " << string((char*)websocketFragment, websocketFragmentSize);
 	
 	//For some reason, Discord sometimes sends invalid JSON data with multiple objects like this: {}{}
@@ -940,6 +955,11 @@ static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *use
 	int objectEnd = 0;
 	int curlyBrackets = 0;
 	while (objectStart < websocketFragmentSize) {
+		//Find the first curly bracket
+		for (int i = 0; i < websocketFragmentSize; i++) {
+			if (websocketFragment[i] == '{') break;
+			objectStart++;
+		}
 		for (int i = objectStart; i < websocketFragmentSize; i++) {
 			if (websocketFragment[i] == '{') {
 				curlyBrackets++;
@@ -965,17 +985,23 @@ static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *use
 			error_msg += L"): ";
 			error_msg += utf8_to_wstring(GetParseError_En(responseJSON.GetParseError()));*/
 			cout << endl << "Error while parsing WebSocket data";
+			receivedWebsocketFramesWithinFragment = 0;
+			websocketFragmentCurrentIdx = 0;
 			return realsize;
 		}
 
 		if (!responseJSON.IsObject()) {
 			cout << endl << "Error parsing WebSocket data: root element must be an object";
+			receivedWebsocketFramesWithinFragment = 0;
+			websocketFragmentCurrentIdx = 0;
 			return realsize;
 		}
 		
 		rapidjson::Value::ConstMemberIterator iter = responseJSON.FindMember("op");
 		if (iter == responseJSON.MemberEnd()) {
 			cout << endl << "Could not find \"op\" element";
+			receivedWebsocketFramesWithinFragment = 0;
+			websocketFragmentCurrentIdx = 0;
 			return realsize;
 		}
 		int op = responseJSON["op"].GetInt();
@@ -1163,12 +1189,16 @@ static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *use
 						cout << endl << "Heartbeat thread stopped";
 						/*shouldStopHeartbeats = false;
 						heartbeatThreadHandle = _beginthread(heartbeatThread, 0, NULL);*/
+						receivedWebsocketFramesWithinFragment = 0;
+						websocketFragmentCurrentIdx = 0;
 						return CURL_WRITEFUNC_ERROR;
 					}
 					break;
 				case 9: //Invalid session
 					cout << endl << "Invalid session";
 					session_id = "";
+					receivedWebsocketFramesWithinFragment = 0;
+					websocketFragmentCurrentIdx = 0;
 					return CURL_WRITEFUNC_ERROR;
 					break;
 				case 10: //Hello
@@ -1235,7 +1265,7 @@ void websocketThread(void* param) {
 			cout << endl << "Reconnecting to Discord gateway";
 			Sleep(5000);
 		}
-		//curl_easy_cleanup(curl);
+		curl_easy_cleanup(curl);
 		//logFile.close();
 	}
 	//MessageBoxA(NULL, "Exiting WebSocket thread", "", MB_OK);

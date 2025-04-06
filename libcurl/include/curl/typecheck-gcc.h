@@ -7,7 +7,7 @@
  *                            | (__| |_| |  _ <| |___
  *                             \___|\___/|_| \_\_____|
  *
- * Copyright (C) 1998 - 2022, Daniel Stenberg, <daniel@haxx.se>, et al.
+ * Copyright (C) Daniel Stenberg, <daniel@haxx.se>, et al.
  *
  * This software is licensed as described in the file COPYING, which
  * you should have received as part of this distribution. The terms
@@ -34,17 +34,16 @@
  * _curl_easy_setopt_err_sometype below
  *
  * NOTE: We use two nested 'if' statements here instead of the && operator, in
- *       order to work around gcc bug #32061.  It affects only gcc 4.3.x/4.4.x
+ *       order to work around gcc bug #32061. It affects only gcc 4.3.x/4.4.x
  *       when compiling with -Wlogical-op.
  *
- * To add an option that uses the same type as an existing option, you'll just
- * need to extend the appropriate _curl_*_option macro
+ * To add an option that uses the same type as an existing option, you will
+ * just need to extend the appropriate _curl_*_option macro
  */
 #define curl_easy_setopt(handle, option, value)                         \
   __extension__({                                                       \
-      CURL_IGNORE_DEPRECATION(__typeof__(option) _curl_opt = option;)   \
+      CURLoption _curl_opt = (option);                                  \
       if(__builtin_constant_p(_curl_opt)) {                             \
-        (void) option;                                                  \
         CURL_IGNORE_DEPRECATION(                                        \
           if(curlcheck_long_option(_curl_opt))                          \
             if(!curlcheck_long(value))                                  \
@@ -120,9 +119,8 @@
 /* wraps curl_easy_getinfo() with typechecking */
 #define curl_easy_getinfo(handle, info, arg)                            \
   __extension__({                                                       \
-      CURL_IGNORE_DEPRECATION(__typeof__(info) _curl_info = info;)      \
+      CURLINFO _curl_info = (info);                                     \
       if(__builtin_constant_p(_curl_info)) {                            \
-        (void) info;                                                    \
         CURL_IGNORE_DEPRECATION(                                        \
           if(curlcheck_string_info(_curl_info))                         \
             if(!curlcheck_arr((arg), char *))                           \
@@ -247,7 +245,7 @@ CURLWARNING(_curl_easy_getinfo_err_curl_off_t,
 
 /* To add a new option to one of the groups, just add
  *   (option) == CURLOPT_SOMETHING
- * to the or-expression. If the option takes a long or curl_off_t, you don't
+ * to the or-expression. If the option takes a long or curl_off_t, you do not
  * have to do anything
  */
 
@@ -277,11 +275,13 @@ CURLWARNING(_curl_easy_getinfo_err_curl_off_t,
    (option) == CURLOPT_DNS_LOCAL_IP6 ||                                       \
    (option) == CURLOPT_DNS_SERVERS ||                                         \
    (option) == CURLOPT_DOH_URL ||                                             \
+   (option) == CURLOPT_ECH        ||                                          \
    (option) == CURLOPT_EGDSOCKET ||                                           \
    (option) == CURLOPT_FTP_ACCOUNT ||                                         \
    (option) == CURLOPT_FTP_ALTERNATIVE_TO_USER ||                             \
    (option) == CURLOPT_FTPPORT ||                                             \
    (option) == CURLOPT_HSTS ||                                                \
+   (option) == CURLOPT_HAPROXY_CLIENT_IP ||                                   \
    (option) == CURLOPT_INTERFACE ||                                           \
    (option) == CURLOPT_ISSUERCERT ||                                          \
    (option) == CURLOPT_KEYPASSWD ||                                           \
@@ -678,7 +678,7 @@ typedef CURLcode (*_curl_ssl_ctx_callback4)(CURL *, const void *,
                                             const void *);
 #ifdef HEADER_SSL_H
 /* hack: if we included OpenSSL's ssl.h, we know about SSL_CTX
- * this will of course break if we're included before OpenSSL headers...
+ * this will of course break if we are included before OpenSSL headers...
  */
 typedef CURLcode (*_curl_ssl_ctx_callback5)(CURL *, SSL_CTX *, void *);
 typedef CURLcode (*_curl_ssl_ctx_callback6)(CURL *, SSL_CTX *, const void *);
