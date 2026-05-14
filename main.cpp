@@ -151,6 +151,8 @@ void addUserToGlobalUserList(uint64_t userID, wstring username, wstring display_
 #define DISCORD_MAX_CHARACTERS 2000
 #define MESSAGE_SPACING 20
 
+#define ENABLE_CONSOLE
+
 const wstring versionString = L"Talk32 (https://github.com/DoaJCBlogger/Talk32, 0.1)";
 
 enum Page {LoginPage, MainPage};
@@ -1315,7 +1317,11 @@ int initializeTables(sqlite3 *db) {
 
 int
 #ifndef __clang__
+	#ifdef ENABLE_CONSOLE
+main(
+	#else
 WINAPI WinMain(
+	#endif
 #else
 main(
 #endif
