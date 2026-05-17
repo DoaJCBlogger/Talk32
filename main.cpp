@@ -151,7 +151,7 @@ void addUserToGlobalUserList(uint64_t userID, wstring username, wstring display_
 #define DISCORD_MAX_CHARACTERS 2000
 #define MESSAGE_SPACING 20
 
-#define ENABLE_CONSOLE
+//#define ENABLE_CONSOLE
 
 const wstring versionString = L"Talk32 (https://github.com/DoaJCBlogger/Talk32, 0.1)";
 
@@ -177,10 +177,14 @@ struct LoggingServer {
 	wstring name;
 	wstring filename;
 	wstring assetFolder;
+	bool shouldDownloadServerIcon;
+	bool shouldDownloadUserAvatars;
+	bool shouldDownloadAttachments;
+	bool shouldDownloadEmbeds;
 	uint64_t lastMessageTimestamp;
 	wstring lastMessageTimestampString;
 	sqlite3 *db;
-	LoggingServer():enabled(true),id(0),idString(L""),name(L""),filename(L""),assetFolder(L""),lastMessageTimestamp(0),lastMessageTimestampString(L""){}
+	LoggingServer():enabled(true),id(0),idString(L""),name(L""),filename(L""),assetFolder(L""),shouldDownloadServerIcon(true),shouldDownloadUserAvatars(true),shouldDownloadAttachments(true),shouldDownloadEmbeds(true),lastMessageTimestamp(0),lastMessageTimestampString(L""),db(NULL){}
 };
 
 struct ConfigObj {
@@ -194,6 +198,7 @@ struct ConfigObj {
 	unsigned int windowWidth;
 	unsigned int windowHeight;
 	vector<LoggingServer> loggingServers;
+	ConfigObj():authToken(L""),dataDir(L""),showUserList(true),roundServerIcons(true),roundUserAvatars(true),windowX(100),windowY(50),windowWidth(985),windowHeight(740),loggingServers(vector<LoggingServer>{}){}
 };
 
 ConfigObj config;
@@ -207,7 +212,7 @@ bool RectangleWidthHeight(HDC hdc, int x, int y, int w, int h);
 bool RoundRectWidthHeight(HDC hdc, int x, int y, int w, int h, int rw, int rh);
 void SetRectXYWidthHeight(RECT* r, long x, long y, long w, long h);
 unsigned int getMessageHeight(unsigned int, string);
-HWND hwndMainWin, statusBar, authTokenBox, messageField, httpResponseLabel, loginBtn, hwndServerList, hwndLeftSidebar, hwndContentArea, offlineBtn;
+static HWND hwndMainWin, statusBar, authTokenBox, messageField, httpResponseLabel, loginBtn, hwndServerList, hwndLeftSidebar, hwndContentArea, offlineBtn;
 HBRUSH windowBGBrush, mainGrayColorBrush, messageFieldBGBrush, discordBlueBtnBrush, discordBlueBtnHoverBrush, discordBlueBtnDownBrush, serverListColorBrush, sidebarColorBrush, serverListHoverColor, serverListSelectedColor;// = (HBRUSH)GetStockObject(WHITE_BRUSH);
 std::string data;
 std::string BearerToken;
@@ -282,6 +287,7 @@ struct Message {
 	int messageHeight;
 	string text;
 	bool deleted;
+	Message():id(0),authorID(0),messageHeight(0),text(""),deleted(false){}
 };
 
 struct ChannelItem {
@@ -294,6 +300,7 @@ struct ChannelItem {
 	bool hideVoiceChannelMembers;
 	int notificationSetting;
 	vector<Message> messages;
+	ChannelItem():name(""),topic(""),id(0),voiceChannel(false),locked(false),unread(false),hideVoiceChannelMembers(false),notificationSetting(0),messages(vector<Message>{}){}
 };
 
 struct ChannelGroup {
@@ -303,6 +310,7 @@ struct ChannelGroup {
 	bool IsCategory;
 	bool IsExpanded;
 	bool collapseUnread;
+	ChannelGroup():name(""),channels(vector<ChannelItem>{}),id(0),IsCategory(false),IsExpanded(true),collapseUnread(false){}
 };
 struct ServerListItem {
 	string name;
@@ -310,6 +318,7 @@ struct ServerListItem {
 	bool unread;
 	vector<ChannelGroup> dataModel;
 	Gdiplus::Bitmap *hbmIcon;
+	ServerListItem():name(""),id(0),unread(false),dataModel(vector<ChannelGroup>{}),hbmIcon(NULL){}
 };
 struct ServerListData {
 	bool leftBtnDown;
@@ -318,7 +327,7 @@ struct ServerListData {
 	long scrollPos;
 	unsigned long long rightClickItemID;
 	vector<ServerListItem> dataModel;
-	ServerListData():hwndScrollbar(NULL),serverHoverIdx(-1){}
+	ServerListData():leftBtnDown(false),hwndScrollbar(NULL),serverHoverIdx(-1),scrollPos(0),rightClickItemID(0),dataModel(vector<ServerListItem>{}){}
 };
 
 struct User {
@@ -327,20 +336,21 @@ struct User {
 	uint64_t discriminator;
 	uint64_t id;
 	Gdiplus::Bitmap* hbmIcon;
+	User():username(L""),displayName(L""),discriminator(0),id(0),hbmIcon(NULL){}
 };
 
-vector<ServerListItem> globalServerIconList;
-vector<User> globalUserList;
-CRITICAL_SECTION globalUserListCS;
+static vector<ServerListItem> globalServerIconList;
+static vector<User> globalUserList;
+static CRITICAL_SECTION globalUserListCS;
 struct ContentAreaData *globalContentAreaData;
 struct LeftSidebarData *globalLeftSidebarData;
-CRITICAL_SECTION globalLeftSidebarDataCS;
+static CRITICAL_SECTION globalLeftSidebarDataCS;
 struct ServerListData *globalServerListData;
-CRITICAL_SECTION globalServerListDataCS;
-vector<Message> *globalMessageList = NULL;
-HDC tempHDC;
-unsigned int messageWidth;
-string DiscordAPIBaseURL = "https://discord.com/api/v10";
+static CRITICAL_SECTION globalServerListDataCS;
+static vector<Message> *globalMessageList = NULL;
+static HDC tempHDC;
+static unsigned int messageWidth;
+static string DiscordAPIBaseURL = "https://discord.com/api/v10";
 
 /*struct LeftSidebarItem {
 	wstring name;
@@ -358,7 +368,7 @@ struct LeftSidebarData {
 	unsigned long long rightClickItemID;
 	vector<ChannelGroup> dataModel;
 	vector<ChannelGroup> *dataModelPtr;
-	LeftSidebarData():hwndScrollbar(NULL),scrollPos(0){}
+	LeftSidebarData():mouseIsOver(false),leftBtnDown(false),hwndScrollbar(NULL),serverName(L""),scrollPos(0),selectedIdx(-1),hoverIdx(-1),selectedChannelID(0),rightClickItemID(0),dataModel(vector<ChannelGroup>{}),dataModelPtr(NULL){}
 };
 
 struct ContentAreaData {
@@ -369,7 +379,7 @@ struct ContentAreaData {
 	unsigned long long totalContentHeight;
 	int oldContentAreaWidth;
 	bool shouldScrollToBottom;
-	ContentAreaData():hwndScrollbar(NULL),scrollPos(0),shouldScrollToBottom(true){}
+	ContentAreaData():messages(vector<Message>{}),hwndScrollbar(NULL),leftBtnDown(false),scrollPos(0),totalContentHeight(0),oldContentAreaWidth(0),shouldScrollToBottom(true){}
 };
 
 const string opcodes[] = {"Dispatch", "Heartbeat", "Identify", "Presence Update", "Voice State Update", "", "Resume", "Reconnect", "Request Guild Members", "Invalid Session", "Hello", "Heartbeat ACK"};
@@ -388,7 +398,7 @@ const char* createTableQueries[8] = {
 };
 
 void heartbeatThread(void* param);
-CRITICAL_SECTION discordGatewayCurlObjectCS;
+static CRITICAL_SECTION discordGatewayCurlObjectCS;
 
 struct DownloadManagerJob {
 	wstring url;
@@ -397,17 +407,18 @@ struct DownloadManagerJob {
 	boolean replace;
 	sqlite3* db;
 	uint64_t objectID;
-	int objectType;
+	int objectType; //0 = server icon, 1 = user avatar, 2 = file dragged into the chat
+	DownloadManagerJob():url(L""),outputFolder(L""),filename(L""),replace(true),db(NULL),objectID(0),objectType(-1){}
 };
-vector<DownloadManagerJob> downloadManagerJobs;
+static vector<DownloadManagerJob> downloadManagerJobs;
 wstring downloadManagerCurrentURL;
 wstring downloadManagerProgress;
 CRITICAL_SECTION downloadManagerJobsCS;
 CRITICAL_SECTION downloadManagerStatusCS;
 bool shouldStopDownloadManager = false;
 //FILE *currentDownloadManagerFile;
-CryptoPP::SHA3_256* currentHash = NULL;
-string currentHashString;
+static CryptoPP::SHA3_256* currentHash = NULL;
+static string currentHashString;
 
 unsigned char hexCharacters[] = {'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F'};
 string bytesToHex(string input) {
@@ -435,6 +446,7 @@ void downloadManagerThread(void* param) {
 	CURL *downloadManagerCurlObject = curl_easy_init();
 	if (downloadManagerCurlObject) {
 		while (!shouldStopDownloadManager) {
+			EnterCriticalSection(&downloadManagerJobsCS);
 			if (downloadManagerJobs.size() > 0) {
 				currentHashString = "";
 				//For some reason, it crashes if we try to concatenate L"" and the uint64_t Unix timestamp value so we have to use to_wstring()
@@ -443,22 +455,32 @@ void downloadManagerThread(void* param) {
 				if (dmj->outputFolder.at(dmj->outputFolder.length() - 1) != L'\\') dmj->outputFolder += L"\\";
 				//If it's a server icon or user avatar, then we need to download it to the cache folder first and then copy it to the assets folder if the server is being logged.
 				//Otherwise, we can just download it directly to the assets folder
+				//If this is a server icon or user avatar, check the cache folder before downloading it
+				//Discord icon URL's are guaranteed to be unique so we just have to check the filename
 				wstring initialOutputFolder = cacheDir;
 				if (dmj->objectType == 0 /* server icon */) {
 					initialOutputFolder += L"server_icons\\";
+					//See if we already have this server icon
 				} else if (dmj->objectType == 1 /* user avatar */) {
-					initialOutputFolder += L"user_avatars\\";
+					initialOutputFolder += L"avatars\\";
 				} else {
 					initialOutputFolder = dmj->outputFolder;
 				}
+				
 				wstring path = wstring(dmj->outputFolder + dmj->filename);
 				//if (dmj->replace || (!dmj->replace && !fileExists(path.c_str()))) {
 					cout << endl << "Downloading " << wstring_to_utf8(dmj->url) << " to " << wstring_to_utf8(path);
-					FILE *currentDownloadManagerFile = fopen(wstring_to_utf8(wstring(initialOutputFolder + ((dmj->objectType >= 2 /* not a server icon or user avatar */) ? dmj->filename : UTCTimeFilename))).c_str(), "wb");
+					/*wstring msg = L"Downloading ";
+					msg += dmj->url + L" to " + path;
+					MessageBox(NULL, msg.c_str(), L"", MB_OK);*/
+					//Use the original filename for server icons and user avatars and the current UTC timestamp and later the hash as the filename for attachments
+					string filename = wstring_to_utf8(wstring(initialOutputFolder + ((dmj->objectType < 2 /* a server icon or user avatar */) ? dmj->filename : UTCTimeFilename)));
+					FILE *currentDownloadManagerFile = fopen(filename.c_str(), "wb");
 					if (currentDownloadManagerFile) {
 						downloadManagerCurrentFileSize = 0;
 						string userAgent = wstring_to_utf8(getUserAgent());
-						curl_easy_setopt(downloadManagerCurlObject, CURLOPT_URL, wstring_to_utf8(dmj->url).c_str());
+						string urlUTF8 = wstring_to_utf8(dmj->url);
+						curl_easy_setopt(downloadManagerCurlObject, CURLOPT_URL, urlUTF8.c_str());
 						curl_easy_setopt(downloadManagerCurlObject, CURLOPT_USERAGENT, userAgent.c_str());
 						curl_easy_setopt(downloadManagerCurlObject, CURLOPT_CAINFO, "cacert.pem");
 						curl_easy_setopt(downloadManagerCurlObject, CURLOPT_VERBOSE, 1L);
@@ -480,7 +502,7 @@ void downloadManagerThread(void* param) {
 							tmp += L"false";
 						}
 						MessageBoxW(NULL, tmp.c_str(), L"", MB_OK);*/
-						
+						//0 = server icon, 1 = user avatar, 2 = file dragged into the chat
 						if (dmj->objectType >= 2 /* Not a server icon or user avatar */) {
 							if (!fileExists(wstring(dmj->outputFolder + utf8_to_wstring(currentHashString)).c_str())) {
 								//The file wasn't downloaded yet so we have to rename it
@@ -489,7 +511,7 @@ void downloadManagerThread(void* param) {
 								//Delete the file if it was already downloaded
 								DeleteFile(wstring(dmj->outputFolder + UTCTimeFilename).c_str());
 							}
-						} else {
+						} else { /* Server icon or user avatar */
 							//Copy the icon to the assets folder if this server is being logged
 							if (!dmj->filename.empty()) CopyFile(wstring(initialOutputFolder + dmj->filename).c_str(), wstring(dmj->outputFolder + utf8_to_wstring(currentHashString)).c_str(), true);
 							
@@ -530,7 +552,9 @@ void downloadManagerThread(void* param) {
 					}
 				//}
 				downloadManagerJobs.erase(begin(downloadManagerJobs));
+				LeaveCriticalSection(&downloadManagerJobsCS);
 			} else {
+				LeaveCriticalSection(&downloadManagerJobsCS);
 				Sleep(500);
 			}
 		}
@@ -781,7 +805,8 @@ bool loadOrCreateConfig() {
 			
 			for (int i = 0; i < arraySize; i++) {
 				LoggingServer ls;
-				ls.id = configDocument["logging_servers"][i]["id"].GetUint64();
+				if (configDocument["logging_servers"][i].FindMember("enabled") != configDocument["logging_servers"][i].MemberEnd() && configDocument["logging_servers"][i]["enabled"].IsBool()) ls.enabled = configDocument["logging_servers"][i]["enabled"].GetBool();
+				ls.id = configDocument["logging_servers"][i]["id"].GetUint64(); //For some reason, this returns undefined results with clang-cl and the "-O2" optimization setting because it can't handle uint64_t's
 				ls.name = utf8_to_wstring(configDocument["logging_servers"][i]["name"].GetString());
 				string loggingServerFilename = configDocument["logging_servers"][i]["filename"].GetString();
 				ls.filename = utf8_to_wstring(loggingServerFilename);
@@ -789,7 +814,19 @@ bool loadOrCreateConfig() {
 				if (configDocument["logging_servers"][i].FindMember("assets") != configDocument["logging_servers"][i].MemberEnd() && configDocument["logging_servers"][i]["assets"].IsString()) loggingServerAssetFolder = configDocument["logging_servers"][i]["assets"].GetString();
 				ls.assetFolder = utf8_to_wstring(loggingServerAssetFolder);
 				if (ls.assetFolder.at(ls.assetFolder.size() - 1) != L'\\') ls.assetFolder += L"\\";
-				wstring avatarsFolder = utf8_to_wstring(loggingServerAssetFolder) + L"avatars";
+				
+				//Create the outer assets folder
+				if (!folderExists(ls.assetFolder.c_str())) {
+					if (!SUCCEEDED(CreateDirectory(ls.assetFolder.c_str(), NULL))) {
+						wstring error_msg = L"Error: could not create server asset directory at ";
+						error_msg += ls.assetFolder;
+						MessageBox(NULL, error_msg.c_str(), L"Error", MB_OK | MB_ICONERROR);
+						
+						//Don't bother trying to create the asset subfolders if we couldn't create the outer one
+						continue;
+						}
+				}
+				wstring avatarsFolder = ls.assetFolder + L"avatars";
 				if (!folderExists(avatarsFolder.c_str())) {
 					if (!SUCCEEDED(CreateDirectory(avatarsFolder.c_str(), NULL))) {
 						wstring error_msg = L"Error: could not create avatars directory at ";
@@ -797,7 +834,7 @@ bool loadOrCreateConfig() {
 						MessageBox(NULL, error_msg.c_str(), L"Error", MB_OK | MB_ICONERROR);
 					}
 				}
-				wstring attachmentsFolder = utf8_to_wstring(loggingServerAssetFolder) + L"attachments";
+				wstring attachmentsFolder = ls.assetFolder + L"attachments";
 				if (!folderExists(attachmentsFolder.c_str())) {
 					if (!SUCCEEDED(CreateDirectory(attachmentsFolder.c_str(), NULL))) {
 						wstring error_msg = L"Error: could not create attachments directory at ";
@@ -812,6 +849,12 @@ bool loadOrCreateConfig() {
 				} else {
 					initializeTables(ls.db);
 				}
+				
+				if (configDocument["logging_servers"][i].FindMember("downloadServerIcon") != configDocument["logging_servers"][i].MemberEnd() && configDocument["logging_servers"][i]["downloadServerIcon"].IsBool()) ls.shouldDownloadServerIcon = configDocument["logging_servers"][i]["downloadServerIcon"].GetBool();
+				if (configDocument["logging_servers"][i].FindMember("downloadUserAvatars") != configDocument["logging_servers"][i].MemberEnd() && configDocument["logging_servers"][i]["downloadUserAvatars"].IsBool()) ls.shouldDownloadUserAvatars = configDocument["logging_servers"][i]["downloadUserAvatars"].GetBool();
+				if (configDocument["logging_servers"][i].FindMember("downloadAttachments") != configDocument["logging_servers"][i].MemberEnd() && configDocument["logging_servers"][i]["downloadAttachments"].IsBool()) ls.shouldDownloadAttachments = configDocument["logging_servers"][i]["downloadAttachments"].GetBool();
+				if (configDocument["logging_servers"][i].FindMember("downloadEmbeds") != configDocument["logging_servers"][i].MemberEnd() && configDocument["logging_servers"][i]["downloadEmbeds"].IsBool()) ls.shouldDownloadEmbeds = configDocument["logging_servers"][i]["downloadEmbeds"].GetBool();
+				
 				//cout << endl << ls.id << ", " << wstring_to_utf8(ls.name) << ", " << wstring_to_utf8(ls.filename);
 				config.loggingServers.push_back(ls);
 			}
@@ -864,9 +907,15 @@ void saveConfig() {
 		GenericDocument<UTF16<> > loggingServer;
 		loggingServer.SetObject();
 		Document::AllocatorType& allocator3 = loggingServer.GetAllocator();
+		loggingServer.AddMember(L"enabled", ls->enabled, allocator3);
 		loggingServer.AddMember(L"id", ls->id, allocator3);
 		loggingServer.AddMember(L"name", StringRef(ls->name), allocator3);
 		loggingServer.AddMember(L"filename", StringRef(ls->filename), allocator3);
+		loggingServer.AddMember(L"assets", StringRef(ls->assetFolder), allocator3);
+		loggingServer.AddMember(L"downloadServerIcon", ls->shouldDownloadServerIcon, allocator3);
+		loggingServer.AddMember(L"downloadUserAvatars", ls->shouldDownloadUserAvatars, allocator3);
+		loggingServer.AddMember(L"downloadAttachments", ls->shouldDownloadAttachments, allocator3);
+		loggingServer.AddMember(L"downloadEmbeds", ls->shouldDownloadEmbeds, allocator3);
 		loggingServers.PushBack(loggingServer, allocator3);
 	}
 	d.AddMember(L"logging_servers", loggingServers, allocator);
@@ -908,7 +957,7 @@ char* websocketFragment = NULL;
 unsigned long websocketFragmentSize = 0;
 unsigned long websocketFragmentCurrentIdx = 0;
 unsigned long receivedWebsocketFramesWithinFragment = 0;
-bool heartbeatThreadIsActive = false;
+static bool heartbeatThreadIsActive = false; //This has to be static to prevent a deadlock when reconnecting to the WebSocket API
 static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *userp) {
 	size_t realsize = size * nmemb;
 	//This can cause an access violation if it tries to read a connection status packet like CURLWS_CLOSE
@@ -932,7 +981,9 @@ static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *use
 		return realsize;
 	}
 	
+	#ifdef ENABLE_CONSOLE
 	cout << endl << "flags=" << frameInfo->flags << ", offset=" << frameInfo->offset << " (actual offset " << websocketFragmentCurrentIdx << "), bytesleft=" << frameInfo->bytesleft;
+	#endif
 	if (receivedWebsocketFramesWithinFragment == 0) {
 		free(websocketFragment);
 		websocketFragment = (char*)malloc(realsize + frameInfo->bytesleft);
@@ -976,9 +1027,11 @@ static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *use
 		}
 		
 		responseJSON.Parse(string((char*)websocketFragment + objectStart, (objectEnd - objectStart) + 1/*websocketFragmentSize*/).c_str());
+		#ifdef ENABLE_CONSOLE
 		if (((objectEnd - objectStart) + 1) < 8192) {
 			cout << endl << "JSON object: " << string((char*)websocketFragment + objectStart, (objectEnd - objectStart) + 1/*websocketFragmentSize*/);
 		}
+		#endif
 		//logFile << endl << "JSON object: " << string((char*)websocketFragment + objectStart, (objectEnd - objectStart) + 1);
 		if (responseJSON.HasParseError()) {
 			/*wstring error_msg = L"Error parsing config file (at position ";
@@ -1011,6 +1064,7 @@ static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *use
 		if (op >= 0 && op <= 11) cout << " (" << opcodes[op] << ")";
 		
 		string t = "";
+		SendMessage(statusBar,SB_SETTEXT, 0, (LPARAM)std::wstring(L"Connected").c_str());
 		if (iter != responseJSON.MemberEnd()) {
 			switch(op) {
 				case 0: //Dispatch
@@ -1128,7 +1182,9 @@ static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *use
 								}
 								//We can start downloading the server icons now
 								for (int i = 0; i < tempDownloadManagerJobs.size(); i++) {
+									EnterCriticalSection(&downloadManagerJobsCS);
 									downloadManagerJobs.push_back(tempDownloadManagerJobs[i]);
+									LeaveCriticalSection(&downloadManagerJobsCS);
 								}
 								tempDownloadManagerJobs.clear();
 								//Unlock the data model
@@ -1177,6 +1233,7 @@ static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *use
 				case 7: //Reconnect
 					{
 						//We need to reconnect
+						SendMessage(statusBar,SB_SETTEXT, 0, (LPARAM)std::wstring(L"Disconnected").c_str());
 						size_t sent;
 						cout << endl << "Sending op 1000 to close the connection";
 						EnterCriticalSection(&discordGatewayCurlObjectCS);
@@ -1197,6 +1254,7 @@ static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *use
 					}
 					break;
 				case 9: //Invalid session
+					SendMessage(statusBar,SB_SETTEXT, 0, (LPARAM)std::wstring(L"Disconnected").c_str());
 					cout << endl << "Invalid session";
 					session_id = "";
 					receivedWebsocketFramesWithinFragment = 0;
@@ -1250,24 +1308,27 @@ void websocketThread(void* param) {
 		}*/
 		
 		string userAgent = wstring_to_utf8(getUserAgent());
-		curl_easy_setopt(curl, CURLOPT_URL, resume_gateway_url.c_str());
-		curl_easy_setopt(curl, CURLOPT_USERAGENT, userAgent.c_str());
-		curl_easy_setopt(curl, CURLOPT_OPENSOCKETFUNCTION, my_opensocketfunc);
-		curl_easy_setopt(curl, CURLOPT_CAINFO, "cacert.pem");
-		curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
-		curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, websocketCallback);
 		while (true) {
+			curl = curl_easy_init();
+			curl_easy_setopt(curl, CURLOPT_URL, resume_gateway_url.c_str());
+			curl_easy_setopt(curl, CURLOPT_USERAGENT, userAgent.c_str());
+			curl_easy_setopt(curl, CURLOPT_OPENSOCKETFUNCTION, my_opensocketfunc);
+			curl_easy_setopt(curl, CURLOPT_CAINFO, "cacert.pem");
+			curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
+			curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, websocketCallback);
 			CURLcode res = curl_easy_perform(curl);
 			//LeaveCriticalSection(&discordGatewayCurlObjectCS);
+			SendMessage(statusBar,SB_SETTEXT, 0, (LPARAM)std::wstring(L"Disconnected").c_str());
 			cout << endl << "Discord gateway disconnected";
 			APIIsLoggedIn = false;
 			shouldStopHeartbeats = true;
 			while (heartbeatThreadIsActive) {}
 			shouldStopHeartbeats = false;
 			cout << endl << "Reconnecting to Discord gateway";
+			curl_easy_cleanup(curl);
 			Sleep(5000);
 		}
-		curl_easy_cleanup(curl);
+		
 		//logFile.close();
 	}
 	//MessageBoxA(NULL, "Exiting WebSocket thread", "", MB_OK);
@@ -1283,7 +1344,7 @@ void heartbeatThread(void* param) {
 		//Send the heartbeat immediately the first time
 		//The official documentation says,
 		//"Upon receiving the Hello event, your app should wait heartbeat_interval * jitter where jitter is any random value between 0 and 1, then send its first Heartbeat (opcode 1) event."
-		seconds = heartbeat_interval / 1000;
+		seconds = heartbeat_interval / 1100;
 		heartbeatObject.str(string());
 		heartbeatObject.clear();
 		heartbeatObject << "{\"op\":1,\"d\":";
@@ -1294,7 +1355,12 @@ void heartbeatThread(void* param) {
 		}
 		heartbeatObject << "}";
 		while (!TryEnterCriticalSection(&discordGatewayCurlObjectCS) && !shouldStopHeartbeats) {}
-		if (!shouldStopHeartbeats) { try { curl_ws_send(curl, heartbeatObject.str().c_str(), heartbeatObject.str().length(), &sent, 4096, CURLWS_TEXT); } catch (...) {} }
+		if (!shouldStopHeartbeats) {
+			try {
+				curl_ws_send(curl, heartbeatObject.str().c_str(), heartbeatObject.str().length(), &sent, 4096, CURLWS_TEXT);
+				cout << endl << "Sending heartbeat object " << heartbeatObject;
+			} catch (...) {}
+		}
 		LeaveCriticalSection(&discordGatewayCurlObjectCS);
 		for (int i = 0; i < seconds && !shouldStopHeartbeats; i++) Sleep(1000);
 	}
@@ -1316,26 +1382,13 @@ int initializeTables(sqlite3 *db) {
 }
 
 int
-#ifndef __clang__
 	#ifdef ENABLE_CONSOLE
-main(
+main(int argc, char** argv
 	#else
-WINAPI WinMain(
-	#endif
-#else
-main(
-#endif
-	#ifndef __clang__
-	HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow
-	#else
-	int argc, char** argv
+WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow
 	#endif
 ) {
-	#ifdef __clang__
-	HINSTANCE hInstance = NULL;
-	HINSTANCE hPrevInstance = NULL;
-	int nCmdShow = 0;
-	#endif
+	
 	//currentHash = new CryptoPP::SHA3_256();
 	static CryptoPP::SHA3_256 currentHashObject;
 	currentHash = &currentHashObject;
@@ -1347,6 +1400,7 @@ main(
 	InitializeCriticalSection(&globalLeftSidebarDataCS);
 	InitializeCriticalSection(&globalServerListDataCS);
 	InitializeCriticalSection(&globalUserListCS);
+	InitializeCriticalSection(&downloadManagerJobsCS);
 	globalServerListData = new ServerListData();
 	/*DownloadManagerJob dmj;
 	dmj.url = L"https://cdn.discordapp.com/icons/807245652072857610/dc1ae5f4eaa70301d97a4e530d3099e1.png";
@@ -1464,6 +1518,7 @@ main(
 	}
 
 	delete globalServerListData;
+	DeleteCriticalSection(&downloadManagerJobsCS);
 	DeleteCriticalSection(&globalUserListCS);
 	DeleteCriticalSection(&globalServerListDataCS);
 	DeleteCriticalSection(&globalLeftSidebarDataCS);
@@ -1513,7 +1568,7 @@ LRESULT CALLBACK WndProc( HWND hwndMainWin, UINT msg, WPARAM wParam, LPARAM lPar
 			//Create controls
 			
 			//Status bar
-			statusBar = CreateWindowW(STATUSCLASSNAME, L"Not connected", WS_CHILD | WS_VISIBLE | SBARS_SIZEGRIP, 0, 0, 0, 0, hwndMainWin, (HMENU)2 /* change later */, (HINSTANCE)GetWindowLong(hwndMainWin, GWL_HINSTANCE), NULL);
+			statusBar = CreateWindowW(STATUSCLASSNAME, L"Not connected", WS_CHILD | WS_VISIBLE | SBARS_SIZEGRIP, 0, 0, 0, 0, hwndMainWin, (HMENU)2 /* change later */, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
 			
 			//Create menu bar
 			AddMenus(hwndMainWin);
@@ -1560,6 +1615,9 @@ LRESULT CALLBACK WndProc( HWND hwndMainWin, UINT msg, WPARAM wParam, LPARAM lPar
 			SetCursor(LoadCursor(0, IDC_ARROW));
 		break;
 
+		//WM_SYSCOMMAND and WM_ACTIVATE are mostly to repaint the window after it's minimized and restored because that doesn't trigger the WM_SIZE event on Windows XP
+		case WM_SYSCOMMAND:
+		case WM_ACTIVATE:
 		case WM_SIZE:
 		{
 			windowRectIsValid = GetWindowRect(hwndMainWin, &windowRect);
@@ -1592,7 +1650,6 @@ LRESULT CALLBACK WndProc( HWND hwndMainWin, UINT msg, WPARAM wParam, LPARAM lPar
 			UpdateWindow(hwndMainWin);
 			//RedrawWindow(hwndServerList, NULL, NULL, NULL);
 		}
-			
 		break;
 		
 		case WM_GETMINMAXINFO:
@@ -1971,7 +2028,7 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 			r.top += 50;
 			//r.bottom -= 25;
 			r.right -= 15;
-			pData->hwndScrollbar = CreateWindowExW(NULL, L"SCROLLBAR",L"", WS_CHILD | SBS_VERT | WS_VISIBLE, r.right, 50, 15, height - 50, wnd, (HMENU)NULL, (HINSTANCE)GetWindowLong(wnd, GWL_HINSTANCE), NULL);
+			pData->hwndScrollbar = CreateWindowExW(NULL, L"SCROLLBAR",L"", WS_CHILD | SBS_VERT | WS_VISIBLE, r.right, 50, 15, height - 50, wnd, (HMENU)NULL, (HINSTANCE)GetWindowLongPtr(wnd, GWLP_HINSTANCE), NULL);
 			int w = r.right - r.left;
 			MoveWindow(pData->hwndScrollbar, r.right - 15, 50, 15, height - 50, TRUE);
 
@@ -2732,7 +2789,7 @@ LRESULT CALLBACK serverListProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lParam
 			int height = r.bottom - r.top;
 			r.top += 50;
 			r.right -= 15;
-			pData->hwndScrollbar = CreateWindowExW(NULL, L"SCROLLBAR",L"", WS_CHILD | SBS_VERT | WS_VISIBLE, r.right, 0, 15, height, wnd, (HMENU)NULL, (HINSTANCE)GetWindowLong(wnd, GWL_HINSTANCE), NULL);
+			pData->hwndScrollbar = CreateWindowExW(NULL, L"SCROLLBAR",L"", WS_CHILD | SBS_VERT | WS_VISIBLE, r.right, 0, 15, height, wnd, (HMENU)NULL, (HINSTANCE)GetWindowLongPtr(wnd, GWLP_HINSTANCE), NULL);
 			int w = r.right - r.left;
 			int h = height;
 			MoveWindow(pData->hwndScrollbar, r.right - 15, 0, 15, h, TRUE);
@@ -2823,19 +2880,19 @@ LRESULT CALLBACK serverListProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lParam
 				//Draw the server icons
 				unsigned int itemCount = pData->dataModel.size();
 				RECT tmp;
-				int itemsToDraw = (h / 56) + 1;
+				int maxItemsToDraw = (h / 56) + 1;
 				int startIdx = (pData->scrollPos / 56) - 1;
 				if (startIdx == -1) startIdx = 0;
 				bool drawExploreIcon = false;
-				if ((startIdx + itemsToDraw) >= pData->dataModel.size() - 1) {
-					itemsToDraw = (pData->dataModel.size() - startIdx);
+				if ((startIdx + maxItemsToDraw + 1) >= pData->dataModel.size()) { //The size() method returns an unsigned int so we can't use (size() - 1) because it will return (2^32 - 1) if the list is empty which means this IF block will never be used and the Explore icon won't get drawn
+					maxItemsToDraw = (pData->dataModel.size() - startIdx);
 					drawExploreIcon = true;
 				}
-				itemsToDraw++;//TODO: the server list draws all but the last icon
+				maxItemsToDraw++;//TODO: the server list draws all but the last icon
 
 				int i = 0;
 				wstring wst;
-				for (unsigned int j = startIdx; (j < startIdx + itemsToDraw) && (j < pData->dataModel.size()); j++) {
+				for (unsigned int j = startIdx; (j < startIdx + maxItemsToDraw) && (j < pData->dataModel.size()); j++) {
 					//Erase the icon area
 					SelectObject(hdc, serverListColorBrush);
 					SetDCPenColor(hdc, serverListColor);
@@ -3177,7 +3234,7 @@ LRESULT CALLBACK contentAreaProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 			int height = r.bottom - r.top;
 			r.top += 50;
 			r.right -= 15;
-			pData->hwndScrollbar = CreateWindowExW(NULL, L"SCROLLBAR",L"", WS_CHILD | SBS_VERT | WS_VISIBLE, r.right, 0, 15, height, wnd, (HMENU)NULL, (HINSTANCE)GetWindowLong(wnd, GWL_HINSTANCE), NULL);
+			pData->hwndScrollbar = CreateWindowExW(NULL, L"SCROLLBAR",L"", WS_CHILD | SBS_VERT | WS_VISIBLE, r.right, 0, 15, height, wnd, (HMENU)NULL, (HINSTANCE)GetWindowLongPtr(wnd, GWLP_HINSTANCE), NULL);
 			int w = r.right - r.left;
 			int h = height;
 			MoveWindow(pData->hwndScrollbar, r.right - 15, 48, 15, h - 48, TRUE);
@@ -4768,7 +4825,7 @@ void addMessageToLog(GenericValue<UTF8<>> *messageJSON) {
 	}
 	//Check if the user is logging this server
 	for (auto it = begin(config.loggingServers); it != end(config.loggingServers); ++it) {
-		if (it->id == guildID) {
+		if (it->id == guildID && it->enabled) {
 			cout << endl << "Logging message \"" << (*messageJSON)["content"].GetString() << "\"";
 			sqlite3_stmt *stmt;
 			
@@ -4852,7 +4909,7 @@ void addMessageToLog(GenericValue<UTF8<>> *messageJSON) {
 					message += attachmentURL;
 					MessageBoxA(NULL, message.c_str(), "", MB_OK);*/
 					
-					if (!it->assetFolder.empty()) {
+					if (!it->assetFolder.empty() && it->shouldDownloadAttachments) {
 						DownloadManagerJob dmj;
 						dmj.url = utf8_to_wstring(attachmentURL);
 						dmj.filename = utf8_to_wstring(attachmentFilename);
@@ -4861,7 +4918,9 @@ void addMessageToLog(GenericValue<UTF8<>> *messageJSON) {
 						dmj.db = it->db;
 						dmj.objectID = stoull(attachmentID);
 						dmj.objectType = 2 /* attachment (file dragged into the chat) */;
+						EnterCriticalSection(&downloadManagerJobsCS);
 						downloadManagerJobs.push_back(dmj);
+						LeaveCriticalSection(&downloadManagerJobsCS);
 					}
 					
 					//"CREATE TABLE IF NOT EXISTS \"attachments\" (\"ID\" INTEGER UNIQUE,\"messageID\" INTEGER,\"idx\" INTEGER,\"filename\" TEXT,\"url\" TEXT,\"filesize\" INTEGER, \"deleted\" INTEGER, PRIMARY KEY(\"ID\",\"messageID\"));",
@@ -4894,7 +4953,7 @@ void addMessageToLog(GenericValue<UTF8<>> *messageJSON) {
 				sqlite3_bind_text(stmt, 5, avatar.c_str(), avatar.length(), SQLITE_STATIC);
 				
 				//Download the avatar
-				if (!it->assetFolder.empty()) {
+				if (!it->assetFolder.empty() && it->shouldDownloadUserAvatars) {
 					DownloadManagerJob dmj;
 					dmj.url = L"https://cdn.discordapp.com/avatars/" + to_wstring(authorID) + L"/" + utf8_to_wstring(avatar) + L".png";
 					dmj.filename = utf8_to_wstring(avatar) + L".png";
@@ -4903,7 +4962,9 @@ void addMessageToLog(GenericValue<UTF8<>> *messageJSON) {
 					dmj.db = it->db;
 					dmj.objectID = authorID;
 					dmj.objectType = 1 /* avatar */;
+					EnterCriticalSection(&downloadManagerJobsCS);
 					downloadManagerJobs.push_back(dmj);
+					LeaveCriticalSection(&downloadManagerJobsCS);
 				}
 			} else {
 				sqlite3_bind_null(stmt, 5);
@@ -5003,7 +5064,7 @@ void loggingSettings(void* param) {
 	WNDCLASSW wc;
 	HWND hwnd;
 	MSG msg;
-	HINSTANCE hInstance = (HINSTANCE)GetWindowLong(hwndMainWin, GWL_HINSTANCE);
+	HINSTANCE hInstance = (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE);
 	
 	memset(&wc, 0, sizeof(wc));
 	wc.lpszClassName = TEXT("LoggingSettingsDialog");
@@ -5030,7 +5091,7 @@ void loggingSettings(void* param) {
 
 LRESULT CALLBACK loggingSettingsDialogProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 	static HWND loggingServerListHWND;
-	HINSTANCE hInstance = (HINSTANCE)GetWindowLong(hwndMainWin, GWL_HINSTANCE);
+	HINSTANCE hInstance = (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE);
 	switch(msg) {
 		case WM_CREATE:
 			{
