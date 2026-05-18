@@ -108,7 +108,10 @@ void addServerToLog(uint64_t id, string name, string icon, string currentTimesta
 void addChannelToLog(uint64_t serverID, uint64_t id, string name, uint64_t category, string topic, int channelType, string timestamp);
 void addCategoryToLog(uint64_t serverID, uint64_t id, string name, string timestamp);
 void loadUserIcon(uint64_t userID, wstring filename);
+void loadServerIcon(uint64_t serverID, wstring filename);
 void addUserToGlobalUserList(uint64_t userID, wstring username, wstring display_name);
+void updateServerListScrollbar();
+void redrawServerList();
 
 //Contains a font fix provided by "Christopher Janzon" on stackoverflow.com
 //https://stackoverflow.com/a/17075471
@@ -161,7 +164,7 @@ enum MainPageSubLocation {Channel, Friends, DM, GroupDM, Explore};
 
 Page location = LoginPage;
 MainPageSubLocation sublocation = Friends;
-unsigned long long selectedServer = -1;
+long long selectedServer = -1;
 uint64_t selectedChannel = -1;
 unsigned int selectedChannelGroupIdx = 0;
 unsigned int selectedChannelIdxWithinGroup = 0;
@@ -458,17 +461,19 @@ void downloadManagerThread(void* param) {
 				//If this is a server icon or user avatar, check the cache folder before downloading it
 				//Discord icon URL's are guaranteed to be unique so we just have to check the filename
 				wstring initialOutputFolder = cacheDir;
+				bool fileIsAlreadyCached = false;
 				if (dmj->objectType == 0 /* server icon */) {
 					initialOutputFolder += L"server_icons\\";
-					//See if we already have this server icon
 				} else if (dmj->objectType == 1 /* user avatar */) {
 					initialOutputFolder += L"avatars\\";
 				} else {
 					initialOutputFolder = dmj->outputFolder;
 				}
+				fileIsAlreadyCached = (dmj->objectType < 2 /* Only check the cache for server icons and user avatars */) && fileExists(wstring(initialOutputFolder + dmj->filename).c_str());
 				
-				wstring path = wstring(dmj->outputFolder + dmj->filename);
-				//if (dmj->replace || (!dmj->replace && !fileExists(path.c_str()))) {
+				if (!fileIsAlreadyCached) {
+					wstring path = wstring(dmj->outputFolder + dmj->filename);
+					//if (dmj->replace || (!dmj->replace && !fileExists(path.c_str()))) {
 					cout << endl << "Downloading " << wstring_to_utf8(dmj->url) << " to " << wstring_to_utf8(path);
 					/*wstring msg = L"Downloading ";
 					msg += dmj->url + L" to " + path;
@@ -502,35 +507,6 @@ void downloadManagerThread(void* param) {
 							tmp += L"false";
 						}
 						MessageBoxW(NULL, tmp.c_str(), L"", MB_OK);*/
-						//0 = server icon, 1 = user avatar, 2 = file dragged into the chat
-						if (dmj->objectType >= 2 /* Not a server icon or user avatar */) {
-							if (!fileExists(wstring(dmj->outputFolder + utf8_to_wstring(currentHashString)).c_str())) {
-								//The file wasn't downloaded yet so we have to rename it
-								MoveFile(wstring(dmj->outputFolder + UTCTimeFilename).c_str(), wstring(dmj->outputFolder + utf8_to_wstring(currentHashString)).c_str());
-							} else {
-								//Delete the file if it was already downloaded
-								DeleteFile(wstring(dmj->outputFolder + UTCTimeFilename).c_str());
-							}
-						} else { /* Server icon or user avatar */
-							//Copy the icon to the assets folder if this server is being logged
-							if (!dmj->filename.empty()) CopyFile(wstring(initialOutputFolder + dmj->filename).c_str(), wstring(dmj->outputFolder + utf8_to_wstring(currentHashString)).c_str(), true);
-							
-							//We need to load the file as a bitmap
-							if (dmj->objectType == 0 /* server icon */) {
-								EnterCriticalSection(&globalServerListDataCS);
-								for (vector<ServerListItem>::iterator it = globalServerListData->dataModel.begin(); it != globalServerListData->dataModel.end(); ++it) {
-									if (it->id == dmj->objectID) {
-										if (it->hbmIcon != NULL) delete it->hbmIcon;
-										it->hbmIcon = new Gdiplus::Bitmap(wstring(dmj->outputFolder + dmj->filename).c_str(), false);
-										break;
-									}
-								}
-								LeaveCriticalSection(&globalServerListDataCS);
-							} else {
-								//This is a user avatar so we have to save it in the cache folder and load it as an HBITMAP
-								loadUserIcon(dmj->objectID, initialOutputFolder + dmj->filename);
-							}
-						}
 						
 						if (dmj->db != NULL) {
 							//Save a record in the database that connects the URL to the hash
@@ -550,6 +526,27 @@ void downloadManagerThread(void* param) {
 							sqlite3_step(stmt);
 						}
 					}
+				}
+				//0 = server icon, 1 = user avatar, 2 = file dragged into the chat
+				if (dmj->objectType >= 2 /* Not a server icon or user avatar */) {
+					if (!fileExists(wstring(dmj->outputFolder + utf8_to_wstring(currentHashString)).c_str())) {
+						//The file wasn't downloaded yet so we have to rename it
+						MoveFile(wstring(dmj->outputFolder + UTCTimeFilename).c_str(), wstring(dmj->outputFolder + utf8_to_wstring(currentHashString)).c_str());
+					} else {
+						//Delete the file if it was already downloaded
+						DeleteFile(wstring(dmj->outputFolder + UTCTimeFilename).c_str());
+					}
+				} else { /* Server icon or user avatar */
+					//Copy the icon to the assets folder if this server is being logged
+					if (!dmj->filename.empty()) CopyFile(wstring(initialOutputFolder + dmj->filename).c_str(), wstring(dmj->outputFolder + utf8_to_wstring(currentHashString)).c_str(), true);
+					
+					//We need to load the file as a bitmap
+					if (dmj->objectType == 0 /* server icon */) {
+						loadServerIcon(dmj->objectID, initialOutputFolder + dmj->filename);
+					} else {
+						loadUserIcon(dmj->objectID, initialOutputFolder + dmj->filename);
+					}
+				}
 				//}
 				downloadManagerJobs.erase(begin(downloadManagerJobs));
 				LeaveCriticalSection(&downloadManagerJobsCS);
@@ -587,6 +584,7 @@ void drawAuthPage(HDC hdc, int w, int h) {
 
 	SetWindowPos(authTokenBox, HWND_TOPMOST, authTokenBoxX, authTokenBoxY, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
 	ShowWindow(authTokenBox, SW_SHOW);
+	SetFocus(authTokenBox);
 
 	SetWindowPos(loginBtn, HWND_TOPMOST, authTokenBoxX - 7 + (AUTH_TOKEN_FIELD_WIDTH - 85), authTokenBoxY + 40, 100, 36, SWP_NOSIZE | SWP_NOZORDER);
 	SetWindowPos(offlineBtn, HWND_TOPMOST, authTokenBoxX - 7 + (AUTH_TOKEN_FIELD_WIDTH - 85) - 135, authTokenBoxY + 40, 125, 36, SWP_NOSIZE | SWP_NOZORDER);
@@ -712,9 +710,6 @@ bool loadOrCreateConfig() {
 		}
 	}
 	
-	//Create the cache\server_icons folder
-	CreateDirectory(wstring(localAppDataPath + L"cache\\server_icons\\").c_str(), NULL);
-	
 	if (shouldCreateConfigFile) {
 		ofstream configFile(configFilePath.c_str(), ios::binary);
 		if (!configFile) {
@@ -815,39 +810,39 @@ bool loadOrCreateConfig() {
 				ls.assetFolder = utf8_to_wstring(loggingServerAssetFolder);
 				if (ls.assetFolder.at(ls.assetFolder.size() - 1) != L'\\') ls.assetFolder += L"\\";
 				
-				//Create the outer assets folder
-				if (!folderExists(ls.assetFolder.c_str())) {
-					if (!SUCCEEDED(CreateDirectory(ls.assetFolder.c_str(), NULL))) {
-						wstring error_msg = L"Error: could not create server asset directory at ";
-						error_msg += ls.assetFolder;
-						MessageBox(NULL, error_msg.c_str(), L"Error", MB_OK | MB_ICONERROR);
-						
-						//Don't bother trying to create the asset subfolders if we couldn't create the outer one
-						continue;
+				if (ls.enabled) { //Don't create asset folders or a database file or handle if logging is disabled for this server
+					//Create the outer assets folder
+					if (!folderExists(ls.assetFolder.c_str())) {
+						if (!SUCCEEDED(CreateDirectory(ls.assetFolder.c_str(), NULL))) {
+							wstring error_msg = L"Error: could not create server asset directory at ";
+							error_msg += ls.assetFolder;
+							MessageBox(NULL, error_msg.c_str(), L"Error", MB_OK | MB_ICONERROR);
+						} else { //Only try to create the asset subfolders and SQLite database if we were able to create the outer asset folder
+							wstring avatarsFolder = ls.assetFolder + L"avatars";
+							if (!folderExists(avatarsFolder.c_str())) {
+								if (!SUCCEEDED(CreateDirectory(avatarsFolder.c_str(), NULL))) {
+									wstring error_msg = L"Error: could not create avatars directory at ";
+									error_msg += avatarsFolder;
+									MessageBox(NULL, error_msg.c_str(), L"Error", MB_OK | MB_ICONERROR);
+								}
+							}
+							wstring attachmentsFolder = ls.assetFolder + L"attachments";
+							if (!folderExists(attachmentsFolder.c_str())) {
+								if (!SUCCEEDED(CreateDirectory(attachmentsFolder.c_str(), NULL))) {
+									wstring error_msg = L"Error: could not create attachments directory at ";
+									error_msg += attachmentsFolder;
+									MessageBox(NULL, error_msg.c_str(), L"Error", MB_OK | MB_ICONERROR);
+								}
+							}
+							int rc = sqlite3_open(loggingServerFilename.c_str(), &ls.db);
+							if (rc) {
+								cout << endl << "Error while opening database: " << sqlite3_errmsg(ls.db);
+							} else {
+								initializeTables(ls.db);
+							}
 						}
-				}
-				wstring avatarsFolder = ls.assetFolder + L"avatars";
-				if (!folderExists(avatarsFolder.c_str())) {
-					if (!SUCCEEDED(CreateDirectory(avatarsFolder.c_str(), NULL))) {
-						wstring error_msg = L"Error: could not create avatars directory at ";
-						error_msg += avatarsFolder;
-						MessageBox(NULL, error_msg.c_str(), L"Error", MB_OK | MB_ICONERROR);
 					}
-				}
-				wstring attachmentsFolder = ls.assetFolder + L"attachments";
-				if (!folderExists(attachmentsFolder.c_str())) {
-					if (!SUCCEEDED(CreateDirectory(attachmentsFolder.c_str(), NULL))) {
-						wstring error_msg = L"Error: could not create attachments directory at ";
-						error_msg += attachmentsFolder;
-						MessageBox(NULL, error_msg.c_str(), L"Error", MB_OK | MB_ICONERROR);
-					}
-				}
-				
-				int rc = sqlite3_open(loggingServerFilename.c_str(), &ls.db);
-				if (rc) {
-					cout << endl << "Error while opening database: " << sqlite3_errmsg(ls.db);
-				} else {
-					initializeTables(ls.db);
+					
 				}
 				
 				if (configDocument["logging_servers"][i].FindMember("downloadServerIcon") != configDocument["logging_servers"][i].MemberEnd() && configDocument["logging_servers"][i]["downloadServerIcon"].IsBool()) ls.shouldDownloadServerIcon = configDocument["logging_servers"][i]["downloadServerIcon"].GetBool();
@@ -945,7 +940,7 @@ curl_socket_t my_opensocketfunc(void *clientp, curlsocktype purpose, struct curl
 	return sock=socket(address->family, address->socktype, address->protocol);
 }
 
-//ofstream logFile;
+//static ofstream logFile;
 int heartbeat_interval = 30000;
 bool shouldStopHeartbeats = false;
 bool APIIsLoggedIn = false;
@@ -953,20 +948,16 @@ uintptr_t heartbeatThreadHandle = NULL;
 string resume_gateway_url = "wss://gateway.discord.gg/?v=10&encoding=json";
 string session_id;
 uint64_t latestDiscordSequenceNumber = 0;
-char* websocketFragment = NULL;
-unsigned long websocketFragmentSize = 0;
-unsigned long websocketFragmentCurrentIdx = 0;
-unsigned long receivedWebsocketFramesWithinFragment = 0;
+static char* websocketFragment = NULL;
+static uint64_t maxWebsocketFrameSize = 0; //The largest WebSocket frame we've encountered so far, not the limit
+#define MAX_WEBSOCKET_FRAGMENT_SIZE 16777216 //Warn the user if the server sends a JSON chunk bigger than 16 MiB
+//static unsigned long websocketFragmentSize = 0;
+static unsigned long websocketFragmentCurrentIdx = 0;
+static unsigned long receivedWebsocketFramesWithinFragment = 0;
+static uint64_t totalWebsocketFragmentSize = 0;
 static bool heartbeatThreadIsActive = false; //This has to be static to prevent a deadlock when reconnecting to the WebSocket API
 static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *userp) {
 	size_t realsize = size * nmemb;
-	//This can cause an access violation if it tries to read a connection status packet like CURLWS_CLOSE
-	/*std::string str = "Received WebSocket data (";
-	str += std::to_string((long long)realsize);
-	str += " bytes): ";
-	str += string((char*)data, realsize);
-	logFile << endl << str;*/
-	
 	const curl_ws_frame* frameInfo = curl_ws_meta(curl);
 	
 	//Don't try to do anything with the message/fragment unless it's text or binary data
@@ -980,15 +971,28 @@ static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *use
 		}
 		return realsize;
 	}
+	//This can cause an access violation if it tries to read a connection status packet like CURLWS_CLOSE
+	/*std::string str = "Received WebSocket data (";
+	str += std::to_string((long long)realsize);
+	str += " bytes): ";
+	str += string((char*)data, realsize);
+	logFile << endl << str;*/
 	
 	#ifdef ENABLE_CONSOLE
 	cout << endl << "flags=" << frameInfo->flags << ", offset=" << frameInfo->offset << " (actual offset " << websocketFragmentCurrentIdx << "), bytesleft=" << frameInfo->bytesleft;
 	#endif
+	if (totalWebsocketFragmentSize > MAX_WEBSOCKET_FRAGMENT_SIZE) MessageBox(NULL, wstring(L"Warning: server sent a JSON message larger than " + to_wstring((uint64_t)MAX_WEBSOCKET_FRAGMENT_SIZE) + L" bytes").c_str(), L"", MB_OK);
 	if (receivedWebsocketFramesWithinFragment == 0) {
-		free(websocketFragment);
-		websocketFragment = (char*)malloc(realsize + frameInfo->bytesleft);
-		websocketFragmentSize = realsize + frameInfo->bytesleft;
-		cout << endl << "WebSocket fragment size: " << websocketFragmentSize;
+		//We have to calculate the full size in this IF block because otherwise the WebSocket thread will only use the size of the last message and only be able to handle single-message JSON chunks
+		totalWebsocketFragmentSize = realsize + frameInfo->bytesleft; //Total size of the entire incoming WebSocket fragment, which might include split JSON chunks (for example, 5 MB split into 4 KiB chunks)
+		//See if we need a bigger WebSocket memory block
+		if (totalWebsocketFragmentSize > maxWebsocketFrameSize) {
+			maxWebsocketFrameSize = totalWebsocketFragmentSize;
+			free(websocketFragment);
+			websocketFragment = (char*)malloc(totalWebsocketFragmentSize);
+			//logFile << endl << "Just allocated " << totalWebsocketFragmentSize << " bytes of memory for the JSON chunk";
+		}
+		cout << endl << "WebSocket fragment size: " << totalWebsocketFragmentSize;
 	}
 	memcpy(websocketFragment + websocketFragmentCurrentIdx, data, realsize);
 	//cout << endl << "Copied " << realsize << " bytes to offset " << websocketFragmentCurrentIdx;
@@ -1000,20 +1004,21 @@ static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *use
 	}
 	
 	Document responseJSON;
-	cout << endl << "About to parse JSON data (length=" << websocketFragmentSize << ")";
-	//logFile << endl << "About to parse JSON data: " << string((char*)websocketFragment, websocketFragmentSize);
+	cout << endl << "About to parse JSON data (length=" << totalWebsocketFragmentSize << ")";
+	//logFile << endl << "About to parse JSON data (" << totalWebsocketFragmentSize << " bytes): " << string((char*)websocketFragment, totalWebsocketFragmentSize);
 	
 	//For some reason, Discord sometimes sends invalid JSON data with multiple objects like this: {}{}
 	int objectStart = 0;
 	int objectEnd = 0;
 	int curlyBrackets = 0;
-	while (objectStart < websocketFragmentSize) {
+	while (objectStart < totalWebsocketFragmentSize) {
 		//Find the first curly bracket
-		for (int i = 0; i < websocketFragmentSize; i++) {
+		for (int i = objectStart; i < totalWebsocketFragmentSize; i++) {
 			if (websocketFragment[i] == '{') break;
 			objectStart++;
 		}
-		for (int i = objectStart; i < websocketFragmentSize; i++) {
+		//logFile << endl << "Found the first curly bracket at index " << objectStart;
+		for (int i = objectStart; i < totalWebsocketFragmentSize; i++) {
 			if (websocketFragment[i] == '{') {
 				curlyBrackets++;
 			} else if (websocketFragment[i] == '}') {
@@ -1025,14 +1030,23 @@ static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *use
 				break;
 			}
 		}
+		//logFile << endl << "Found the closing curly bracket at index " << objectEnd;
+		string jsonData;
+		if (objectEnd == 0) {
+			objectEnd = totalWebsocketFragmentSize;
+			jsonData = string((char*)websocketFragment + objectStart, (objectEnd - objectStart) + 1/*websocketFragmentSize*/);
+			jsonData += "}"; //Sometimes this is omitted at the end for large chunks for some reason which breaks the JSON parser
+		} else {
+			jsonData = string((char*)websocketFragment + objectStart, (objectEnd - objectStart) + 1/*websocketFragmentSize*/);
+		}
 		
-		responseJSON.Parse(string((char*)websocketFragment + objectStart, (objectEnd - objectStart) + 1/*websocketFragmentSize*/).c_str());
+		responseJSON.Parse(jsonData.c_str());
 		#ifdef ENABLE_CONSOLE
 		if (((objectEnd - objectStart) + 1) < 8192) {
 			cout << endl << "JSON object: " << string((char*)websocketFragment + objectStart, (objectEnd - objectStart) + 1/*websocketFragmentSize*/);
 		}
 		#endif
-		//logFile << endl << "JSON object: " << string((char*)websocketFragment + objectStart, (objectEnd - objectStart) + 1);
+		//logFile << endl << "JSON object (objectEnd=" << objectEnd << ", objectStart=" << objectStart << ", length=" << jsonData.length() << "): " << jsonData;
 		if (responseJSON.HasParseError()) {
 			/*wstring error_msg = L"Error parsing config file (at position ";
 			long long offset = (unsigned)responseJSON.GetErrorOffset();
@@ -1040,6 +1054,7 @@ static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *use
 			error_msg += L"): ";
 			error_msg += utf8_to_wstring(GetParseError_En(responseJSON.GetParseError()));*/
 			cout << endl << "Error while parsing WebSocket data";
+			//logFile << endl << "Error while parsing WebSocket data";
 			receivedWebsocketFramesWithinFragment = 0;
 			websocketFragmentCurrentIdx = 0;
 			return realsize;
@@ -1047,6 +1062,7 @@ static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *use
 
 		if (!responseJSON.IsObject()) {
 			cout << endl << "Error parsing WebSocket data: root element must be an object";
+			//logFile << endl << "Error parsing WebSocket data: root element must be an object";
 			receivedWebsocketFramesWithinFragment = 0;
 			websocketFragmentCurrentIdx = 0;
 			return realsize;
@@ -1054,13 +1070,14 @@ static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *use
 		
 		rapidjson::Value::ConstMemberIterator iter = responseJSON.FindMember("op");
 		if (iter == responseJSON.MemberEnd()) {
-			cout << endl << "Could not find \"op\" element";
+			//logFile << endl << "Could not find \"op\" element";
 			receivedWebsocketFramesWithinFragment = 0;
 			websocketFragmentCurrentIdx = 0;
 			return realsize;
 		}
 		int op = responseJSON["op"].GetInt();
 		cout << endl << "op=" << op;
+		//logFile << endl << "op=" << op;
 		if (op >= 0 && op <= 11) cout << " (" << opcodes[op] << ")";
 		
 		string t = "";
@@ -1113,6 +1130,7 @@ static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *use
 								int channelType;
 								int channelsArraySize;
 								//Iterate over servers
+								
 								for (int h = 0; h < guildsArraySize; h++) {
 									Value& guildObject = guildsArray[h];
 									server.id = stoull(guildObject["id"].GetString());
@@ -1177,9 +1195,16 @@ static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *use
 									} //for (int i = 0; i < channelsArraySize; i++) {
 									if (!defaultCG.channels.empty()) server.dataModel.push_back(defaultCG);
 									globalServerListData->dataModel.push_back(server);
+									//Temporarily release the global server list to update it for every server so the user doesn't have to wait until they're all loaded to see something happen, and so the program doesn't deadlock as soon as we update the status bar
+									LeaveCriticalSection(&globalServerListDataCS);
+									updateServerListScrollbar();
+									redrawServerList();
+									SendMessage(statusBar,SB_SETTEXT, 1, (LPARAM)wstring(L"Adding server " + to_wstring((long long)(h + 1)) + L"/" + to_wstring(guildsArraySize)).c_str());
+									EnterCriticalSection(&globalServerListDataCS);
 									defaultCG.channels.clear();
 									server.dataModel.clear();
 								}
+								SendMessage(statusBar,SB_SETTEXT, 1, NULL);
 								//We can start downloading the server icons now
 								for (int i = 0; i < tempDownloadManagerJobs.size(); i++) {
 									EnterCriticalSection(&downloadManagerJobsCS);
@@ -1189,6 +1214,8 @@ static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *use
 								tempDownloadManagerJobs.clear();
 								//Unlock the data model
 								LeaveCriticalSection(&globalServerListDataCS);
+								updateServerListScrollbar();
+								redrawServerList();
 							}
 						} else if (t.compare("MESSAGE_CREATE") == 0) {
 							//cout << endl << "MESSAGE_CREATE: \"" << responseJSON["d"]["content"].GetString() << "\"";
@@ -1388,7 +1415,7 @@ main(int argc, char** argv
 WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow
 	#endif
 ) {
-	
+
 	//currentHash = new CryptoPP::SHA3_256();
 	static CryptoPP::SHA3_256 currentHashObject;
 	currentHash = &currentHashObject;
@@ -1423,9 +1450,9 @@ WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, in
 
 	//Load the config file
 	if (!loadOrCreateConfig()) return -1;
-	if (config.authToken.length() > 0) {
+	/*if (config.authToken.length() > 0) {
 		location = MainPage;
-	}
+	}*/
 	
 	//Create the temporary DC
 	tempHDC = CreateCompatibleDC(NULL);
@@ -1508,9 +1535,9 @@ WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, in
 		
 		loginBtn = CreateWindowExW(NULL, L"DiscordButton", L"Log In", WS_CHILD | WS_VISIBLE, 10, 10, 100, 40, hwndMainWin, (HMENU)1, NULL, NULL);
 		//ShowWindow(loginBtn, SW_HIDE);
-	} else */if (location != LoginPage && config.authToken.length() != 0) {
+	} else *//*if (location != LoginPage && config.authToken.length() != 0) {
 		login(false);
-	}
+	}*/
 
 	while( GetMessage(&msg, NULL, 0, 0)) {
 		TranslateMessage(&msg);
@@ -1600,13 +1627,14 @@ LRESULT CALLBACK WndProc( HWND hwndMainWin, UINT msg, WPARAM wParam, LPARAM lPar
 				//If we're on the auth page, create the text field and login button
 				authTokenBox = CreateWindowW(L"Edit", NULL, WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 233, 15, AUTH_TOKEN_FIELD_WIDTH, 20, hwndMainWin, (HMENU)IDC_AUTHTOKENFIELD, NULL, NULL);
 				oldEditProc = (WNDPROC)SetWindowLongPtr(authTokenBox, GWLP_WNDPROC, (LONG_PTR)editProc);
+				SetWindowText(authTokenBox, config.authToken.c_str());
 				ShowWindow(authTokenBox, SW_HIDE);
 				
 				loginBtn = CreateWindowExW(NULL, L"DiscordButton", L"Log In", WS_CHILD | WS_VISIBLE, 10, 10, 100, 40, hwndMainWin, (HMENU)1, NULL, NULL);
 				offlineBtn = CreateWindowExW(NULL, L"DiscordButton", L"Offline Mode", WS_CHILD | WS_VISIBLE, 60, 10, 125, 40, hwndMainWin, (HMENU)1, NULL, NULL);
-			} else if (location != LoginPage && config.authToken.length() != 0) {
+			}/* else if (location != LoginPage && config.authToken.length() != 0) {
 				login(false);
-			}
+			}*/
 
 			//Apply the correct (non-bold) font to all the UI elements
 			EnumChildWindows(hwndMainWin, (WNDENUMPROC)SetFont, (LPARAM)GetStockObject(DEFAULT_GUI_FONT));
@@ -1813,9 +1841,9 @@ LRESULT CALLBACK WndProc( HWND hwndMainWin, UINT msg, WPARAM wParam, LPARAM lPar
 }
 
 bool login(bool clearAuthPage, bool offlineMode) {
-	if (!offlineMode && config.authToken.length() == 0) {
+	if (!offlineMode /*&& config.authToken.length() == 0*/) {
 		int authTokenLength = GetWindowTextLength(authTokenBox);
-		if (!offlineMode && authTokenLength == 0) {
+		if (authTokenLength == 0) {
 			MessageBox(NULL, L"You have to provide an authorization token.", L"", MB_OK);
 			return false;
 		}
@@ -1834,12 +1862,6 @@ bool login(bool clearAuthPage, bool offlineMode) {
 		return false;*/
 	}
 
-	wstring cacheJson = cacheDir + L"cache.json";
-	if (offlineMode && !fileExists(cacheJson.c_str())) {
-		MessageBox(NULL, L"Error: cache.json is missing", L"", MB_OK);
-		return false;
-	}
-
 	//Set the location so we don't keep repainting the auth page
 	location = MainPage;
 	offlineModeEnabled = offlineMode;
@@ -1852,6 +1874,11 @@ bool login(bool clearAuthPage, bool offlineMode) {
 	//Load the data model if offline mode is enabled
 	if (false && offlineMode) {
 		//Load cache.json from the cache folder in the local appdata subfolder
+		wstring cacheJson = cacheDir + L"cache.json";
+		if (offlineMode && !fileExists(cacheJson.c_str())) {
+			MessageBox(NULL, L"Error: cache.json is missing", L"", MB_OK);
+			return false;
+		}
 		ifstream offlineJsonFile(cacheJson.c_str(), ios::binary);
 		if (!offlineJsonFile) {
 			wstring error_msg = L"Error: could not load cache file at ";
@@ -3197,6 +3224,28 @@ LRESULT CALLBACK serverListProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lParam
 	}
 	LeaveCriticalSection(&globalServerListDataCS);
 	return DefWindowProcW(wnd, msg, wParam, lParam);
+}
+
+void updateServerListScrollbar() {
+	//The global server list data MUST be locked before calling this
+	RECT r;
+	GetClientRect(hwndServerList, &r);
+	int w = r.right - r.left;
+	int h = r.bottom - r.top;
+	MoveWindow(globalServerListData->hwndScrollbar, r.right - 15, 0, 15, h, TRUE);
+	
+	if (h >= (globalServerListData->dataModel.size() + 2) * 56) globalServerListData->scrollPos = 0;
+
+	SCROLLINFO si = {0};
+	GetScrollInfo(globalServerListData->hwndScrollbar, SB_CTL, &si);
+	si.cbSize = sizeof(SCROLLINFO);
+	si.fMask = SIF_RANGE | SIF_PAGE;
+	si.nMin = 0;
+	si.nMax = (globalServerListData->dataModel.size() + 3/*1*/) * 56;
+	si.nPage = h;
+	si.nPos = 0;
+	si.nTrackPos = 0;
+	SetScrollInfo(globalServerListData->hwndScrollbar, SB_CTL, &si, true);
 }
 
 LRESULT CALLBACK contentAreaProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lParam)
@@ -4823,9 +4872,16 @@ void addMessageToLog(GenericValue<UTF8<>> *messageJSON) {
 		//Skip DM's
 		return;
 	}
+	
+	uint64_t authorID = stoull((*messageJSON)["author"]["id"].GetString());
+	boolean containsAvatar = (*messageJSON)["author"].FindMember("avatar") != (*messageJSON)["author"].MemberEnd() && !(*messageJSON)["author"]["avatar"].IsNull();
+	string avatar = ""; //We have to create this here so it still exists when the query is executed. If we don't, it will use the date
+	if (containsAvatar) avatar = ((*messageJSON)["author"]["avatar"]).GetString();
+	bool messageIsFromLoggedServer = false;
 	//Check if the user is logging this server
 	for (auto it = begin(config.loggingServers); it != end(config.loggingServers); ++it) {
 		if (it->id == guildID && it->enabled) {
+			messageIsFromLoggedServer = true;
 			cout << endl << "Logging message \"" << (*messageJSON)["content"].GetString() << "\"";
 			sqlite3_stmt *stmt;
 			
@@ -4856,7 +4912,7 @@ void addMessageToLog(GenericValue<UTF8<>> *messageJSON) {
 			} else {
 				sqlite3_bind_null(stmt, 6);
 			}
-			uint64_t authorID = stoull((*messageJSON)["author"]["id"].GetString());
+			
 			sqlite3_bind_int64(stmt, 7, authorID);
 			sqlite3_bind_int(stmt, 8, (*messageJSON)["pinned"].GetBool() ? 1 : 0);
 			string referenceMessage, referenceChannel, referenceServer;
@@ -4941,31 +4997,13 @@ void addMessageToLog(GenericValue<UTF8<>> *messageJSON) {
 			sqlite3_prepare_v2(it->db, query.c_str(), query.length(), &stmt, NULL);
 			string username = ((*messageJSON)["author"]["username"]).GetString();
 			int discriminator = stoi((*messageJSON)["author"]["discriminator"].GetString());
-			boolean containsAvatar = (*messageJSON)["author"].FindMember("avatar") != (*messageJSON)["author"].MemberEnd() && !(*messageJSON)["author"]["avatar"].IsNull();
 			sqlite3_bind_int64(stmt, 1, authorID);
 			sqlite3_bind_text(stmt, 2, username.c_str(), username.length(), SQLITE_STATIC);
 			sqlite3_bind_int64(stmt, 3, discriminator);
 			bool isBot = (*messageJSON)["author"].FindMember("bot") != (*messageJSON)["author"].MemberEnd() && (*messageJSON)["author"]["bot"].IsBool() && (*messageJSON)["author"]["bot"].GetBool();
 			sqlite3_bind_int(stmt, 4, isBot ? 1 : 0);
-			string avatar = ""; //We have to create this here so it still exists when the query is executed. If we don't, it will use the date
 			if (containsAvatar) {
-				avatar = ((*messageJSON)["author"]["avatar"]).GetString();
 				sqlite3_bind_text(stmt, 5, avatar.c_str(), avatar.length(), SQLITE_STATIC);
-				
-				//Download the avatar
-				if (!it->assetFolder.empty() && it->shouldDownloadUserAvatars) {
-					DownloadManagerJob dmj;
-					dmj.url = L"https://cdn.discordapp.com/avatars/" + to_wstring(authorID) + L"/" + utf8_to_wstring(avatar) + L".png";
-					dmj.filename = utf8_to_wstring(avatar) + L".png";
-					dmj.outputFolder = it->assetFolder + L"avatars\\";
-					dmj.replace = false;
-					dmj.db = it->db;
-					dmj.objectID = authorID;
-					dmj.objectType = 1 /* avatar */;
-					EnterCriticalSection(&downloadManagerJobsCS);
-					downloadManagerJobs.push_back(dmj);
-					LeaveCriticalSection(&downloadManagerJobsCS);
-				}
 			} else {
 				sqlite3_bind_null(stmt, 5);
 			}
@@ -4973,8 +5011,22 @@ void addMessageToLog(GenericValue<UTF8<>> *messageJSON) {
 			sqlite3_bind_text(stmt, 6, avatarTimestamp.c_str(), avatarTimestamp.length(), SQLITE_STATIC);
 			sqlite3_step(stmt);
 			
-			
 			break;
+		}
+		
+		//Download the avatar to at least the cache folder so we still have it even if the server isn't being logged
+		if (!it->assetFolder.empty() && it->shouldDownloadUserAvatars) {
+			DownloadManagerJob dmj;
+			dmj.url = L"https://cdn.discordapp.com/avatars/" + to_wstring(authorID) + L"/" + utf8_to_wstring(avatar) + L".png";
+			dmj.filename = utf8_to_wstring(avatar) + L".png";
+			dmj.outputFolder = messageIsFromLoggedServer ? it->assetFolder + L"avatars\\" : cacheDir;
+			dmj.replace = false;
+			dmj.db = it->db;
+			dmj.objectID = authorID;
+			dmj.objectType = 1 /* avatar */;
+			EnterCriticalSection(&downloadManagerJobsCS);
+			downloadManagerJobs.push_back(dmj);
+			LeaveCriticalSection(&downloadManagerJobsCS);
 		}
 	}
 }
@@ -5253,4 +5305,30 @@ void addUserToGlobalUserList(uint64_t userID, wstring username, wstring display_
 		globalUserList.push_back(u);
 	}
 	LeaveCriticalSection(&globalUserListCS);
+}
+
+void loadServerIcon(uint64_t serverID, wstring filename) {
+	EnterCriticalSection(&globalServerListDataCS);
+	for (vector<ServerListItem>::iterator it = globalServerListData->dataModel.begin(); it != globalServerListData->dataModel.end(); ++it) {
+		if (it->id == serverID) {
+			if (it->hbmIcon != NULL) delete it->hbmIcon;
+			it->hbmIcon = new Gdiplus::Bitmap(filename.c_str(), false);
+			break;
+		}
+	}
+	LeaveCriticalSection(&globalServerListDataCS);
+	redrawServerList();
+}
+
+void redrawServerList() {
+	//updateServerListScrollbar();
+	{
+		RECT r;
+		GetClientRect(hwndServerList, &r);
+		r.right -= 15;
+		InvalidateRect(hwndServerList, &r, FALSE);
+	}
+	//InvalidateRect(hwndServerList, NULL, true);
+	//RedrawWindow(hwndServerList, NULL, NULL, RDW_UPDATENOW | RDW_ALLCHILDREN | RDW_INVALIDATE | RDW_INVALIDATE | RDW_INTERNALPAINT);
+	//UpdateWindow(hwndServerList);
 }
