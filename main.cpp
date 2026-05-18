@@ -73,7 +73,7 @@ wstring getUserAgent();
 void copyText(string text);
 void copyUnicodeText(wstring text);
 wstring getUserName(uint64_t id);
-wstring getUserNameWithDiscriminator(uint64_t id);
+//wstring getUserNameWithDiscriminator(uint64_t id);
 Gdiplus::Bitmap* getUserAvatar(uint64_t id);
 void submitMessage();
 void recalculateTotalMessageHeight(bool);
@@ -369,9 +369,9 @@ struct LeftSidebarData {
 	int hoverIdx;
 	unsigned long long selectedChannelID;
 	unsigned long long rightClickItemID;
-	vector<ChannelGroup> dataModel;
+	vector<ChannelGroup> initialDataModel;
 	vector<ChannelGroup> *dataModelPtr;
-	LeftSidebarData():mouseIsOver(false),leftBtnDown(false),hwndScrollbar(NULL),serverName(L""),scrollPos(0),selectedIdx(-1),hoverIdx(-1),selectedChannelID(0),rightClickItemID(0),dataModel(vector<ChannelGroup>{}),dataModelPtr(NULL){}
+	LeftSidebarData():mouseIsOver(false),leftBtnDown(false),hwndScrollbar(NULL),serverName(L""),scrollPos(0),selectedIdx(-1),hoverIdx(-1),selectedChannelID(0),rightClickItemID(0),initialDataModel(vector<ChannelGroup>{}),dataModelPtr(NULL){}
 };
 
 struct ContentAreaData {
@@ -1106,7 +1106,7 @@ static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *use
 								//We have to wait to start downloading the server icons because if they get downloaded before the servers are in the global data model, there won't be anywhere to put the HBITMAP
 								vector<DownloadManagerJob> tempDownloadManagerJobs;
 								//cout << endl << "Entered the critical section";
-								globalLeftSidebarData->dataModel.clear();
+								if (globalLeftSidebarData->dataModelPtr != NULL) globalLeftSidebarData->dataModelPtr->clear();
 								Value& guildsArray = responseJSON["d"]["guilds"];
 								long long guildsArraySize = guildsArray.Size();
 								if (guildsArraySize > 0) globalServerListData->dataModel.clear(); //Don't duplicate the server list if Discord sends it again
@@ -1169,12 +1169,13 @@ static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *use
 											c.name = guildObject["channels"][i]["name"].GetString();
 											c.topic = (guildObject["channels"][i].FindMember("topic") != guildObject["channels"][i].MemberEnd() && !guildObject["channels"][i]["topic"].IsNull()) ? guildObject["channels"][i]["topic"].GetString() : string("");
 											c.voiceChannel = (channelType == 2);
+											//logFile << endl << "Server \"" << server.name << "\", category \"Text Channels\", channel " << c.name;
 											defaultCG.channels.push_back(c);
 											addChannelToLog(server.id, c.id, c.name, 0, c.topic, channelType, wstring_to_utf8(currentTimestamp));
 											continue;
 										}
 										
-										if (guildObject["channels"][i]["type"].GetInt() != 4) continue;
+										if (channelType != 4) continue;
 										categoryID = stoull(guildObject["channels"][i]["id"].GetString());
 										cg.id = categoryID;
 										cg.name = guildObject["channels"][i]["name"].GetString();
@@ -1186,6 +1187,7 @@ static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *use
 											c.name = guildObject["channels"][j]["name"].GetString();
 											c.topic = (guildObject["channels"][j].FindMember("topic") != guildObject["channels"][j].MemberEnd() && !guildObject["channels"][j]["topic"].IsNull()) ? guildObject["channels"][j]["topic"].GetString() : string("");
 											c.voiceChannel = (channelType == 2);
+											//logFile << endl << "Server \"" << server.name << "\", category \"" << cg.name << "\", channel " << c.name;
 											cg.channels.push_back(c);
 											addChannelToLog(server.id, c.id, c.name, categoryID, c.topic, channelType, wstring_to_utf8(currentTimestamp));
 										} //for (int j = 0; j < channelsArraySize; j++) {
@@ -1198,12 +1200,18 @@ static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *use
 									//Temporarily release the global server list to update it for every server so the user doesn't have to wait until they're all loaded to see something happen, and so the program doesn't deadlock as soon as we update the status bar
 									LeaveCriticalSection(&globalServerListDataCS);
 									updateServerListScrollbar();
-									redrawServerList();
+									//redrawServerList();
 									SendMessage(statusBar,SB_SETTEXT, 1, (LPARAM)wstring(L"Adding server " + to_wstring((long long)(h + 1)) + L"/" + to_wstring(guildsArraySize)).c_str());
 									EnterCriticalSection(&globalServerListDataCS);
 									defaultCG.channels.clear();
 									server.dataModel.clear();
 								}
+								//Open the first server so the left sidebar isn't blank
+								selectedServer = begin(globalServerListData->dataModel)->id;
+								selectedServerName = begin(globalServerListData->dataModel)->name;
+								EnterCriticalSection(&globalLeftSidebarDataCS);
+								globalLeftSidebarData->dataModelPtr = &(begin(globalServerListData->dataModel)->dataModel);
+								LeaveCriticalSection(&globalLeftSidebarDataCS);
 								SendMessage(statusBar,SB_SETTEXT, 1, NULL);
 								//We can start downloading the server icons now
 								for (int i = 0; i < tempDownloadManagerJobs.size(); i++) {
@@ -1216,6 +1224,9 @@ static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *use
 								LeaveCriticalSection(&globalServerListDataCS);
 								updateServerListScrollbar();
 								redrawServerList();
+								//Redraw the left sidebar
+								InvalidateRect(hwndLeftSidebar, NULL, TRUE);
+								UpdateWindow(hwndLeftSidebar);
 							}
 						} else if (t.compare("MESSAGE_CREATE") == 0) {
 							//cout << endl << "MESSAGE_CREATE: \"" << responseJSON["d"]["content"].GetString() << "\"";
@@ -1422,7 +1433,7 @@ WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, in
 	
 	memset(emojiIsLoaded, 0, (EMOJI_COUNT / 8) + ((EMOJI_COUNT % 8) != 0 ? 1 : 0));
 	globalLeftSidebarData = new LeftSidebarData();
-	globalLeftSidebarData->dataModelPtr = &(globalLeftSidebarData->dataModel);
+	globalLeftSidebarData->dataModelPtr = &(globalLeftSidebarData->initialDataModel);
 	InitializeCriticalSection(&discordGatewayCurlObjectCS);
 	InitializeCriticalSection(&globalLeftSidebarDataCS);
 	InitializeCriticalSection(&globalServerListDataCS);
@@ -1669,8 +1680,8 @@ LRESULT CALLBACK WndProc( HWND hwndMainWin, UINT msg, WPARAM wParam, LPARAM lPar
 			SendMessage(statusBar, WM_SIZE, 0, 0);
 			if (windowRectIsValid) {
 				statusBarParts[0] = 100;
-				statusBarParts[1] = 200;
-				statusBarParts[2] = 300;
+				statusBarParts[1] = 220;
+				statusBarParts[2] = 320;
 				SendMessage(statusBar, SB_SETPARTS, 3, (LPARAM)&statusBarParts);
 				InvalidateRect(hwndMainWin, NULL, true);
 			}
@@ -2060,10 +2071,10 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 			MoveWindow(pData->hwndScrollbar, r.right - 15, 50, 15, height - 50, TRUE);
 
 			unsigned int totalItems = 0;
-			for (unsigned int i = 0; i < pData->dataModel.size(); i++) {
+			for (unsigned int i = 0; i < pData->dataModelPtr->size(); i++) {
 				totalItems++;
-				if (pData->dataModel.at(i).IsExpanded) 
-					for (unsigned int j = 0; j < pData->dataModel.at(i).channels.size(); j++) totalItems++;
+				if (pData->dataModelPtr->at(i).IsExpanded) 
+					for (unsigned int j = 0; j < pData->dataModelPtr->at(i).channels.size(); j++) totalItems++;
 			}
 			SCROLLINFO si = {0};
 			GetScrollInfo(pData->hwndScrollbar, SB_CTL, &si);
@@ -2130,7 +2141,7 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 					LineTo(hdc, 238, 22);
 
 					//Draw the channels
-					unsigned int channelGroupCount = globalLeftSidebarData->dataModel.size();
+					unsigned int channelGroupCount = globalLeftSidebarData->dataModelPtr->size();
 					int idx = 0;
 					bool shouldStopDrawingChannels = false;
 					BITMAP bmp;
@@ -2143,13 +2154,14 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 					unsigned int startingChannelWithinGroup = -1;
 					bool shouldStopSearchingForStartPosition = false;
 					unsigned int pixels = -32;//If this starts at 0 then the left sidebar will ignore the first downward tick of the scroll wheel.
-					for (unsigned int i = 0; i < globalLeftSidebarData->dataModel.size() && !shouldStopSearchingForStartPosition; i++) {
+					//logFile << endl << "leftSidebarProc WM_PAINT, globalLeftSidebarData->dataModelPtr->size()=" << globalLeftSidebarData->dataModelPtr->size();
+					for (unsigned int i = 0; i < globalLeftSidebarData->dataModelPtr->size() && !shouldStopSearchingForStartPosition; i++) {
 						startingChannelGroup = i;
 						pixels += 32;
 						shouldStopSearchingForStartPosition = (pixels >= pData->scrollPos);
 						startingChannelWithinGroup = -1;
-						if (globalLeftSidebarData->dataModel.at(i).IsExpanded) {
-							for (unsigned int j = 0; j < globalLeftSidebarData->dataModel.at(i).channels.size() && !shouldStopSearchingForStartPosition; j++) {
+						if (globalLeftSidebarData->dataModelPtr->at(i).IsExpanded) {
+							for (unsigned int j = 0; j < globalLeftSidebarData->dataModelPtr->at(i).channels.size() && !shouldStopSearchingForStartPosition; j++) {
 								startingChannelWithinGroup = j;
 								pixels += 32;
 								shouldStopSearchingForStartPosition = (pixels >= pData->scrollPos);
@@ -2173,10 +2185,10 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 							Rectangle(hdc, 0, (idx * 32) + 50, 232, (idx * 32) + 50 + 32 + 32);
 							
 							//ExtTextOut(hdc, 12, (idx * 32) + 50 + 7 + 8, NULL, NULL, pData->dataModel.at(i).name.c_str(), pData->dataModel.at(i).name.length(), NULL);
-							DrawTextWithColorEmojis(hdc, &GDIPlusOutputObject, 12, (idx * 32) + 50 + 7 + 8, 223, false, (unsigned char*)globalLeftSidebarData->dataModel.at(i).name.c_str(), globalLeftSidebarData->dataModel.at(i).name.length(), false, NULL);
+							DrawTextWithColorEmojis(hdc, &GDIPlusOutputObject, 12, (idx * 32) + 50 + 7 + 8, 223, false, (unsigned char*)globalLeftSidebarData->dataModelPtr->at(i).name.c_str(), globalLeftSidebarData->dataModelPtr->at(i).name.length(), false, NULL);
 							
 							//Draw the sideways or down-facing arrow beside the channel group
-							if (globalLeftSidebarData->dataModel.at(i).IsExpanded) {
+							if (globalLeftSidebarData->dataModelPtr->at(i).IsExpanded) {
 								//Draw the down-facing arrow
 								SetDCPenColor(hdc, pData->hoverIdx == idx ? RGB(188,188,190) : RGB(125,128,133));
 								MoveToEx(hdc, 4, (idx * 32) + 50 + 15 + 5, NULL);
@@ -2196,7 +2208,7 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 							startingChannelWithinGroup = 0;
 							
 							//Because this group is collaped, we don't want to draw the channels
-							if (!globalLeftSidebarData->dataModel.at(i).IsExpanded) {
+							if (!globalLeftSidebarData->dataModelPtr->at(i).IsExpanded) {
 								startingChannelWithinGroup = -1;
 								continue;
 							}
@@ -2204,11 +2216,11 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 						
 
 						//Don't draw channels in a collapsed channel group
-						if (!globalLeftSidebarData->dataModel.at(i).IsExpanded) continue;
+						if (!globalLeftSidebarData->dataModelPtr->at(i).IsExpanded) continue;
 
 						//Draw the channels
 						SelectObject(hdc, channelNameFont);
-						for (unsigned int j = startingChannelWithinGroup; j < globalLeftSidebarData->dataModel.at(i).channels.size(); j++) {
+						for (unsigned int j = startingChannelWithinGroup; j < globalLeftSidebarData->dataModelPtr->at(i).channels.size(); j++) {
 							//Don't keep drawing past the bottom of the list
 							if (((idx * 32) + 50) > h) {
 								shouldStopDrawingChannels = true;
@@ -2216,7 +2228,7 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 							}
 
 							//Draw the channel name
-							SetTextColor(hdc, globalLeftSidebarData->dataModel.at(i).channels.at(j).unread ? RGB(255, 255, 255) : channelColor);
+							SetTextColor(hdc, globalLeftSidebarData->dataModelPtr->at(i).channels.at(j).unread ? RGB(255, 255, 255) : channelColor);
 							
 							//Draw the hover or selection background, if necessary
 							//Clear any background that may have been drawn before
@@ -2237,7 +2249,7 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 							}
 							
 							//ExtTextOut(hdc, 42, (idx * 32) + 50 + 7, NULL, NULL, pData->dataModel.at(i).channels.at(j).name.c_str(), pData->dataModel.at(i).channels.at(j).name.length(), NULL);
-							DrawTextWithColorEmojis(hdc, &GDIPlusOutputObject, 42, (idx * 32) + 50 + 7, 178, false, (unsigned char*)globalLeftSidebarData->dataModel.at(i).channels.at(j).name.c_str(), globalLeftSidebarData->dataModel.at(i).channels.at(j).name.length(), false, NULL);
+							DrawTextWithColorEmojis(hdc, &GDIPlusOutputObject, 42, (idx * 32) + 50 + 7, 178, false, (unsigned char*)globalLeftSidebarData->dataModelPtr->at(i).channels.at(j).name.c_str(), globalLeftSidebarData->dataModelPtr->at(i).channels.at(j).name.length(), false, NULL);
 
 							//Draw the channel icon
 							/*hBmpChannelPoundSign;
@@ -2247,13 +2259,13 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 							hBmpVoiceChannelIcon;
 							hBmpVoiceChannelLockedIcon;*/
 							
-							if (pData->selectedChannelID == globalLeftSidebarData->dataModel.at(i).channels.at(j).id) {
+							if (pData->selectedChannelID == globalLeftSidebarData->dataModelPtr->at(i).channels.at(j).id) {
 								//The channel is selected
 							} else {
 								//The channel is not selected
-								if (globalLeftSidebarData->dataModel.at(i).channels.at(j).locked) {
+								if (globalLeftSidebarData->dataModelPtr->at(i).channels.at(j).locked) {
 									//The channel is locked but not selected
-									if (globalLeftSidebarData->dataModel.at(i).channels.at(j).voiceChannel) {
+									if (globalLeftSidebarData->dataModelPtr->at(i).channels.at(j).voiceChannel) {
 										//The channel is a locked voice channel but is not selected
 										channelIcon = hBmpVoiceChannelLockedIcon;
 									} else {
@@ -2262,7 +2274,7 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 									}
 								} else {
 									//The channel is unlocked and not selected
-									if (globalLeftSidebarData->dataModel.at(i).channels.at(j).voiceChannel) {
+									if (globalLeftSidebarData->dataModelPtr->at(i).channels.at(j).voiceChannel) {
 										//The channel is an unlocked voice channel and is not selected
 										channelIcon = hBmpVoiceChannelIcon;
 									} else {
@@ -2276,7 +2288,7 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 							BitBlt(hdc, 20, (idx * 32) + 50 + 1 + 7, bmp.bmWidth, bmp.bmHeight, iconHDC, 0, 0, SRCCOPY);
 							
 							//Draw the half circle if the server is marked unread
-							if (globalLeftSidebarData->dataModel.at(i).channels.at(j).unread) {
+							if (globalLeftSidebarData->dataModelPtr->at(i).channels.at(j).unread) {
 								SelectObject(hdc, GetStockBrush(WHITE_BRUSH));
 								SetDCPenColor(hdc, RGB(255, 255, 255));
 								Ellipse(hdc, -4, (idx * 32) + 50 + 5 + 7, 4, (idx * 32) + 50 + 5 + 8 + 7);
@@ -2365,17 +2377,17 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 					
 					//If the user clicked a channel group, then expand or collapse it.
 					unsigned int itemIdx = -1;
-					for (unsigned int i = 0; i < globalLeftSidebarData->dataModel.size(); i++) {
+					for (unsigned int i = 0; i < globalLeftSidebarData->dataModelPtr->size(); i++) {
 						itemIdx++;
 						if (itemIdx == actualHoverIdx) {
-							globalLeftSidebarData->dataModel.at(i).IsExpanded = !globalLeftSidebarData->dataModel.at(i).IsExpanded;
+							globalLeftSidebarData->dataModelPtr->at(i).IsExpanded = !globalLeftSidebarData->dataModelPtr->at(i).IsExpanded;
 							
 							//Re-calculate the scrollbar size
 							unsigned int totalItems = 0;
-							for (unsigned int i = 0; i < globalLeftSidebarData->dataModel.size(); i++) {
+							for (unsigned int i = 0; i < globalLeftSidebarData->dataModelPtr->size(); i++) {
 								totalItems++;
-								if (globalLeftSidebarData->dataModel.at(i).IsExpanded) 
-									for (unsigned int j = 0; j < globalLeftSidebarData->dataModel.at(i).channels.size(); j++) totalItems++;
+								if (globalLeftSidebarData->dataModelPtr->at(i).IsExpanded) 
+									for (unsigned int j = 0; j < globalLeftSidebarData->dataModelPtr->at(i).channels.size(); j++) totalItems++;
 							}
 							RECT r;
 							GetClientRect(wnd, &r);
@@ -2402,19 +2414,19 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 							break;
 						}
 						//If the user clicked a channel then open it.
-						if (globalLeftSidebarData->dataModel.at(i).IsExpanded) {
+						if (globalLeftSidebarData->dataModelPtr->at(i).IsExpanded) {
 							bool shouldStopSearchingForClickedItem = false;
-							for (unsigned int j = 0; j < globalLeftSidebarData->dataModel.at(i).channels.size(); j++) {
+							for (unsigned int j = 0; j < globalLeftSidebarData->dataModelPtr->at(i).channels.size(); j++) {
 								itemIdx++;
 								if (itemIdx == actualHoverIdx) {
-									if (!globalLeftSidebarData->dataModel.at(i).channels.at(j).voiceChannel) {
+									if (!globalLeftSidebarData->dataModelPtr->at(i).channels.at(j).voiceChannel) {
 										//The user clicked a text channel
-										selectedChannel = globalLeftSidebarData->dataModel.at(i).channels.at(j).id;
+										selectedChannel = globalLeftSidebarData->dataModelPtr->at(i).channels.at(j).id;
 										selectedChannelGroupIdx = i;
 										selectedChannelIdxWithinGroup = j;
-										selectedChannelName = globalLeftSidebarData->dataModel.at(i).channels.at(j).name;
-										selectedChannelTopic = globalLeftSidebarData->dataModel.at(i).channels.at(j).topic;
-										globalMessageList = &(globalLeftSidebarData->dataModel.at(i).channels.at(j).messages);
+										selectedChannelName = globalLeftSidebarData->dataModelPtr->at(i).channels.at(j).name;
+										selectedChannelTopic = globalLeftSidebarData->dataModelPtr->at(i).channels.at(j).topic;
+										globalMessageList = &(globalLeftSidebarData->dataModelPtr->at(i).channels.at(j).messages);
 
 										//Update the content area
 										InvalidateRect(hwndContentArea, NULL, TRUE);
@@ -2468,11 +2480,11 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 					
 					//If the user right-clicked a channel group, then show a context menu.
 					unsigned int itemIdx = -1;
-					for (unsigned int i = 0; i < globalLeftSidebarData->dataModel.size(); i++) {
+					for (unsigned int i = 0; i < globalLeftSidebarData->dataModelPtr->size(); i++) {
 						itemIdx++;
 						if (itemIdx == actualHoverIdx) {
 							//The user right-clicked a channel group
-							pData->rightClickItemID = globalLeftSidebarData->dataModel.at(i).id;
+							pData->rightClickItemID = globalLeftSidebarData->dataModelPtr->at(i).id;
 							HMENU hMenu = CreatePopupMenu();
 							HMENU hMenuMuteChannel = CreatePopupMenu();
 							HMENU hMenuNotificationSettings = CreatePopupMenu();
@@ -2486,7 +2498,7 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 							AppendMenuW(hMenu, MF_STRING | MF_POPUP, (UINT_PTR)hMenuMuteChannel, L"Mute Category");
 							
 							AppendMenuW(hMenu, MF_STRING, IDM_CHANNEL_GROUP_COLLAPSE_UNREAD, L"Collapse Category");
-							CheckMenuItem(hMenu, IDM_CHANNEL_GROUP_COLLAPSE_UNREAD, globalLeftSidebarData->dataModel.at(i).collapseUnread ? MF_CHECKED : MF_UNCHECKED);
+							CheckMenuItem(hMenu, IDM_CHANNEL_GROUP_COLLAPSE_UNREAD, globalLeftSidebarData->dataModelPtr->at(i).collapseUnread ? MF_CHECKED : MF_UNCHECKED);
 
 							AppendMenuW(hMenu, MF_STRING, IDM_COPY_CHANNEL_ID, L"Copy ID");
 							TrackPopupMenu(hMenu, TPM_RIGHTBUTTON, mousePosition.x, mousePosition.y, 0, wnd, NULL);
@@ -2498,13 +2510,13 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 							break;
 						}
 						//If the user right-clicked a channel then show a context menu
-						if (globalLeftSidebarData->dataModel.at(i).IsExpanded) {
+						if (globalLeftSidebarData->dataModelPtr->at(i).IsExpanded) {
 							bool shouldStopSearchingForClickedItem = false;
-							for (unsigned int j = 0; j < globalLeftSidebarData->dataModel.at(i).channels.size(); j++) {
+							for (unsigned int j = 0; j < globalLeftSidebarData->dataModelPtr->at(i).channels.size(); j++) {
 								itemIdx++;
 								if (itemIdx == actualHoverIdx) {
-									pData->rightClickItemID = globalLeftSidebarData->dataModel.at(i).channels.at(j).id;
-									if (!globalLeftSidebarData->dataModel.at(i).channels.at(j).voiceChannel) {
+									pData->rightClickItemID = globalLeftSidebarData->dataModelPtr->at(i).channels.at(j).id;
+									if (!globalLeftSidebarData->dataModelPtr->at(i).channels.at(j).voiceChannel) {
 										//The user right-clicked a text channel
 										/*selectedChannel = pData->dataModel.at(i).channels.at(j).id;
 										selectedChannelGroupIdx = i;
@@ -2530,7 +2542,7 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 										AppendMenuW(hMenuNotificationSettings, MF_STRING, IDM_NOTIFICATIONS_NONE, L"Nothing");
 										
 										int notificationSetting;
-										switch (globalLeftSidebarData->dataModel.at(i).channels.at(j).notificationSetting) {
+										switch (globalLeftSidebarData->dataModelPtr->at(i).channels.at(j).notificationSetting) {
 											case 3:
 												notificationSetting = IDM_NOTIFICATIONS_NONE;
 											break;
@@ -2562,7 +2574,7 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 										AppendMenuW(hMenu, MF_STRING, IDM_VOICE_CHANNEL_HIDE_NAMES, L"Hide Names");
 										AppendMenuW(hMenu, MF_STRING, IDM_VOICE_CHANNEL_INVITE, L"Invite People");
 										AppendMenuW(hMenu, MF_STRING, IDM_VOICE_CHANNEL_COPY_ID, L"Copy ID");
-										CheckMenuItem(hMenu, IDM_VOICE_CHANNEL_HIDE_NAMES, globalLeftSidebarData->dataModel.at(i).channels.at(j).hideVoiceChannelMembers ? MF_CHECKED : MF_UNCHECKED);
+										CheckMenuItem(hMenu, IDM_VOICE_CHANNEL_HIDE_NAMES, globalLeftSidebarData->dataModelPtr->at(i).channels.at(j).hideVoiceChannelMembers ? MF_CHECKED : MF_UNCHECKED);
 										TrackPopupMenu(hMenu, TPM_RIGHTBUTTON, mousePosition.x, mousePosition.y, 0, wnd, NULL);
 										
 										DestroyMenu(hMenu);
@@ -2590,10 +2602,10 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 				MoveWindow(pData->hwndScrollbar, r.right - 15, 50, 15, h - 50, TRUE);
 
 				unsigned int totalItems = 0;
-				for (unsigned int i = 0; i < globalLeftSidebarData->dataModel.size(); i++) { //Broken on Windows 8.1
+				for (unsigned int i = 0; i < globalLeftSidebarData->dataModelPtr->size(); i++) { //Broken on Windows 8.1
 					totalItems++;
-					if (globalLeftSidebarData->dataModel.at(i).IsExpanded) 
-						for (unsigned int j = 0; j < globalLeftSidebarData->dataModel.at(i).channels.size(); j++) totalItems++;
+					if (globalLeftSidebarData->dataModelPtr->at(i).IsExpanded) 
+						for (unsigned int j = 0; j < globalLeftSidebarData->dataModelPtr->at(i).channels.size(); j++) totalItems++;
 				}
 				SCROLLINFO si = {0};
 				GetScrollInfo(pData->hwndScrollbar, SB_CTL, &si);
@@ -2679,16 +2691,16 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 			switch(LOWORD(wParam)) {
 				case IDM_VOICE_CHANNEL_HIDE_NAMES:
 				{
-					for (unsigned int i = 0; i < globalLeftSidebarData->dataModel.size(); i++) {
-						if (globalLeftSidebarData->dataModel.at(i).id == pData->rightClickItemID) {
+					for (unsigned int i = 0; i < globalLeftSidebarData->dataModelPtr->size(); i++) {
+						if (globalLeftSidebarData->dataModelPtr->at(i).id == pData->rightClickItemID) {
 							//The user right-clicked a channel group
 							
 							//Stop the loop
 							break;
 						}
-						if (globalLeftSidebarData->dataModel.at(i).IsExpanded) {
+						if (globalLeftSidebarData->dataModelPtr->at(i).IsExpanded) {
 							bool shouldStopSearchingForClickedItem = false;
-							for (unsigned int j = 0; j < globalLeftSidebarData->dataModel.at(i).channels.size(); j++) {
+							for (unsigned int j = 0; j < globalLeftSidebarData->dataModelPtr->at(i).channels.size(); j++) {
 							}
 						}
 					}
@@ -2697,11 +2709,11 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 				case IDM_CHANNEL_MARK_AS_READ:
 				{
 					bool shouldStop = false;
-					for (unsigned int i = 0; i < globalLeftSidebarData->dataModel.size() && !shouldStop; i++) {
-						if (globalLeftSidebarData->dataModel.at(i).id == pData->rightClickItemID) {
+					for (unsigned int i = 0; i < globalLeftSidebarData->dataModelPtr->size() && !shouldStop; i++) {
+						if (globalLeftSidebarData->dataModelPtr->at(i).id == pData->rightClickItemID) {
 							//The user wants to mark a channel group as read
-							for (unsigned int j = 0; j < globalLeftSidebarData->dataModel.at(i).channels.size(); j++) {
-								globalLeftSidebarData->dataModel.at(i).channels.at(j).unread = false;
+							for (unsigned int j = 0; j < globalLeftSidebarData->dataModelPtr->at(i).channels.size(); j++) {
+								globalLeftSidebarData->dataModelPtr->at(i).channels.at(j).unread = false;
 							}
 							
 							//Redraw the list
@@ -2711,12 +2723,12 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 							//Stop the loop
 							break;
 						}
-						if (globalLeftSidebarData->dataModel.at(i).IsExpanded) {
+						if (globalLeftSidebarData->dataModelPtr->at(i).IsExpanded) {
 							bool shouldStopSearchingForClickedItem = false;
-							for (unsigned int j = 0; j < globalLeftSidebarData->dataModel.at(i).channels.size(); j++) {
-								if (globalLeftSidebarData->dataModel.at(i).channels.at(j).id == pData->rightClickItemID) {
+							for (unsigned int j = 0; j < globalLeftSidebarData->dataModelPtr->at(i).channels.size(); j++) {
+								if (globalLeftSidebarData->dataModelPtr->at(i).channels.at(j).id == pData->rightClickItemID) {
 									//The user wants to mark a channel as read
-									globalLeftSidebarData->dataModel.at(i).channels.at(j).unread = false;
+									globalLeftSidebarData->dataModelPtr->at(i).channels.at(j).unread = false;
 									
 									//Redraw the list
 									InvalidateRect(hwndLeftSidebar, NULL, TRUE);
@@ -2733,20 +2745,20 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 				case IDM_COPY_CHANNEL_ID:
 				{
 					bool shouldStop = false;
-					for (unsigned int i = 0; i < globalLeftSidebarData->dataModel.size() && !shouldStop; i++) {
-						if (globalLeftSidebarData->dataModel.at(i).id == pData->rightClickItemID) {
+					for (unsigned int i = 0; i < globalLeftSidebarData->dataModelPtr->size() && !shouldStop; i++) {
+						if (globalLeftSidebarData->dataModelPtr->at(i).id == pData->rightClickItemID) {
 							//The user wants to copy the ID of a channel group
-							copyText(to_string((long long)globalLeftSidebarData->dataModel.at(i).id));
+							copyText(to_string((long long)globalLeftSidebarData->dataModelPtr->at(i).id));
 							
 							//Stop the loop
 							break;
 						}
-						if (globalLeftSidebarData->dataModel.at(i).IsExpanded) {
+						if (globalLeftSidebarData->dataModelPtr->at(i).IsExpanded) {
 							bool shouldStopSearchingForClickedItem = false;
-							for (unsigned int j = 0; j < globalLeftSidebarData->dataModel.at(i).channels.size(); j++) {
-								if (globalLeftSidebarData->dataModel.at(i).channels.at(j).id == pData->rightClickItemID) {
+							for (unsigned int j = 0; j < globalLeftSidebarData->dataModelPtr->at(i).channels.size(); j++) {
+								if (globalLeftSidebarData->dataModelPtr->at(i).channels.at(j).id == pData->rightClickItemID) {
 									//The user wants to copy the ID of a channel
-									copyText(to_string((long long)globalLeftSidebarData->dataModel.at(i).channels.at(j).id));
+									copyText(to_string((long long)globalLeftSidebarData->dataModelPtr->at(i).channels.at(j).id));
 									
 									//Stop the loop
 									shouldStop = true;
@@ -3065,7 +3077,7 @@ LRESULT CALLBACK serverListProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lParam
 					selectedServerName = pData->dataModel.at(pData->serverHoverIdx - 1).name;
 					
 					EnterCriticalSection(&globalLeftSidebarDataCS);
-					//globalLeftSidebarData->dataModel.clear();
+					//globalLeftSidebarData->dataModelPtr->clear();
 					for (auto it = begin(globalServerListData->dataModel); it != end(globalServerListData->dataModel); ++it) {
 						if (it->id == selectedServer) {
 							globalLeftSidebarData->dataModelPtr = &(it->dataModel);
@@ -3386,7 +3398,7 @@ LRESULT CALLBACK contentAreaProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 				wstring username;
 				long offScreenContentHeight = (pData->totalContentHeight - (height - (48 + 48)));
 				long pixelsToAdd = offScreenContentHeight - pData->scrollPos;
-				wstring debugStr = L"content height=" + to_wstring((long long)pData->totalContentHeight) + L", scrollPos=" + to_wstring((long long)pData->scrollPos);
+				//wstring debugStr = L"content height=" + to_wstring((long long)pData->totalContentHeight) + L", scrollPos=" + to_wstring((long long)pData->scrollPos);
 				//MessageBox(NULL, debugStr.c_str(), L"", MB_OK);
 				bool addOnce = false;
 				Gdiplus::Rect avatarRect;
@@ -3422,7 +3434,7 @@ LRESULT CALLBACK contentAreaProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 						textY -= 22;
 						SetTextColor(hdc, RGB(255, 255, 255)); //TODO: draw username with the right color
 						SelectObject(hdc, userNameFont);
-						username = getUserNameWithDiscriminator(it->authorID);
+						username = getUserName(it->authorID);
 						ExtTextOut(hdc, textRect.left, textY, NULL, NULL, username.c_str(), username.length(), NULL);
 						
 						//Draw the avatar
@@ -3927,12 +3939,12 @@ wstring getUserName(uint64_t id) {
 	return L"Unknown user " + to_wstring((long long)id);
 }
 
-wstring getUserNameWithDiscriminator(uint64_t id) {
+/*wstring getUserNameWithDiscriminator(uint64_t id) {
 	for (unsigned int i = 0; i < globalUserList.size(); i++) {
 		if (globalUserList.at(i).id == id) return globalUserList.at(i).username + L" #" + to_wstring((long long)globalUserList.at(i).discriminator);
 	}
 	return L"Unknown user " + to_wstring((long long)id);
-}
+}*/
 
 Gdiplus::Bitmap* getUserAvatar(uint64_t id) {
 	EnterCriticalSection(&globalUserListCS);
