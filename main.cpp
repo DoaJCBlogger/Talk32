@@ -200,8 +200,9 @@ struct ConfigObj {
 	unsigned int windowY;
 	unsigned int windowWidth;
 	unsigned int windowHeight;
+	bool startMaximized;
 	vector<LoggingServer> loggingServers;
-	ConfigObj():authToken(L""),dataDir(L""),showUserList(true),roundServerIcons(true),roundUserAvatars(true),windowX(100),windowY(50),windowWidth(985),windowHeight(740),loggingServers(vector<LoggingServer>{}){}
+	ConfigObj():authToken(L""),dataDir(L""),showUserList(true),roundServerIcons(true),roundUserAvatars(true),windowX(100),windowY(50),windowWidth(985),windowHeight(740),startMaximized(false),loggingServers(vector<LoggingServer>{}){}
 };
 
 ConfigObj config;
@@ -778,17 +779,21 @@ bool loadOrCreateConfig() {
 
 		//Window position (array of x,y,w,h)
 		iter = configDocument.FindMember("window_pos");
-		if (iter != configDocument.MemberEnd() && configDocument["window_pos"].IsArray()) {
-			Value& positionArray = configDocument["window_pos"];
-			long long arraySize = positionArray.Size();
-			if (arraySize >= 1) config.windowX = configDocument["window_pos"][0].GetUint64();
-			if (arraySize >= 2) config.windowY = configDocument["window_pos"][1].GetUint64();
-			if (arraySize >= 3) config.windowWidth = configDocument["window_pos"][2].GetUint64();
-			if (arraySize >= 4) config.windowHeight = configDocument["window_pos"][3].GetUint64();
+		if (iter != configDocument.MemberEnd()) {
+			if (configDocument["window_pos"].IsArray()) {
+				Value& positionArray = configDocument["window_pos"];
+				long long arraySize = positionArray.Size();
+				if (arraySize >= 1) config.windowX = configDocument["window_pos"][0].GetUint64();
+				if (arraySize >= 2) config.windowY = configDocument["window_pos"][1].GetUint64();
+				if (arraySize >= 3) config.windowWidth = configDocument["window_pos"][2].GetUint64();
+				if (arraySize >= 4) config.windowHeight = configDocument["window_pos"][3].GetUint64();
 
-			//Validate the window size so it can't go below the minimum
-			if (config.windowWidth < MINIMUM_WINDOW_WIDTH) config.windowWidth = MINIMUM_WINDOW_WIDTH;
-			if (config.windowHeight < MINIMUM_WINDOW_HEIGHT) config.windowHeight = MINIMUM_WINDOW_HEIGHT;
+				//Validate the window size so it can't go below the minimum
+				if (config.windowWidth < MINIMUM_WINDOW_WIDTH) config.windowWidth = MINIMUM_WINDOW_WIDTH;
+				if (config.windowHeight < MINIMUM_WINDOW_HEIGHT) config.windowHeight = MINIMUM_WINDOW_HEIGHT;
+			} else if (configDocument["window_pos"].IsString() && string(configDocument["window_pos"].GetString()).compare("maximized") == 0) {
+				config.startMaximized = true;
+			}
 		}
 
 		configFile.close();
@@ -889,14 +894,17 @@ void saveConfig() {
 		config.windowHeight = r.bottom - r.top;
 	}
 
-	GenericValue<UTF16<> > windowPos(kArrayType);
-	Value::AllocatorType allocator2;
-	windowPos.PushBack(config.windowX, allocator2);
-	windowPos.PushBack(config.windowY, allocator2);
-	windowPos.PushBack(config.windowWidth, allocator2);
-	windowPos.PushBack(config.windowHeight, allocator2);
-
-	d.AddMember(L"window_pos", windowPos, allocator2);
+	if (!config.startMaximized) {
+		GenericValue<UTF16<> > windowPos(kArrayType);
+		Value::AllocatorType allocator2;
+		windowPos.PushBack(config.windowX, allocator2);
+		windowPos.PushBack(config.windowY, allocator2);
+		windowPos.PushBack(config.windowWidth, allocator2);
+		windowPos.PushBack(config.windowHeight, allocator2);
+		d.AddMember(L"window_pos", windowPos, allocator2);
+	} else {
+		d.AddMember(L"window_pos", StringRef(L"maximized"), allocator);
+	}
 	
 	GenericValue<UTF16<> > loggingServers(kArrayType);
 	for (auto ls = begin(config.loggingServers); ls != end(config.loggingServers); ++ls) {
@@ -1546,8 +1554,17 @@ WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, in
 	contentAreaClass.hCursor = LoadCursor(0, IDC_ARROW);
 	contentAreaClass.cbWndExtra = sizeof(ContentAreaData*);
 	RegisterClassW(&contentAreaClass);
-	
-	hwndMainWin = CreateWindowW(wc.lpszClassName, L"Talk32 (Unofficial Client for Discord)", WS_OVERLAPPEDWINDOW | WS_VISIBLE, config.windowX, config.windowY, config.windowWidth, config.windowHeight, 0, 0, hInstance, 0);
+
+	if (!config.startMaximized) {
+		hwndMainWin = CreateWindowW(wc.lpszClassName, L"Talk32 (Unofficial Client for Discord)", WS_OVERLAPPEDWINDOW | WS_VISIBLE, config.windowX, config.windowY, config.windowWidth, config.windowHeight, 0, 0, hInstance, 0);
+	} else {
+		hwndMainWin = CreateWindowW(wc.lpszClassName, L"Talk32 (Unofficial Client for Discord)", WS_OVERLAPPEDWINDOW | WS_VISIBLE | WS_MAXIMIZE, 0, 0, 0, 0, 0, 0, hInstance, 0);
+		//We have to do these extra steps to maximize the window on Windows XP
+		ShowWindow(hwndMainWin, SW_SHOWMAXIMIZED | SW_MAXIMIZE);
+		SendMessage(hwndMainWin, WM_SIZE, NULL, NULL);
+		InvalidateRect(hwndMainWin, NULL, TRUE);
+		UpdateWindow(hwndMainWin);
+	}
 
 	/*if (location == LoginPage) {
 		//If we're on the auth page, create the text field and login button
