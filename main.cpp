@@ -346,6 +346,7 @@ static vector<ServerListItem> globalServerIconList;
 static vector<User> globalUserList;
 static CRITICAL_SECTION globalUserListCS;
 struct ContentAreaData *globalContentAreaData;
+static CRITICAL_SECTION globalContentAreaDataCS;
 struct LeftSidebarData *globalLeftSidebarData;
 static CRITICAL_SECTION globalLeftSidebarDataCS;
 struct ServerListData *globalServerListData;
@@ -1449,6 +1450,7 @@ WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, in
 	InitializeCriticalSection(&globalLeftSidebarDataCS);
 	InitializeCriticalSection(&globalServerListDataCS);
 	InitializeCriticalSection(&globalUserListCS);
+	InitializeCriticalSection(&globalContentAreaDataCS);
 	InitializeCriticalSection(&downloadManagerJobsCS);
 	globalServerListData = new ServerListData();
 	/*DownloadManagerJob dmj;
@@ -1568,6 +1570,7 @@ WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, in
 
 	delete globalServerListData;
 	DeleteCriticalSection(&downloadManagerJobsCS);
+	DeleteCriticalSection(&globalContentAreaDataCS);
 	DeleteCriticalSection(&globalUserListCS);
 	DeleteCriticalSection(&globalServerListDataCS);
 	DeleteCriticalSection(&globalLeftSidebarDataCS);
@@ -2445,7 +2448,9 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 										selectedChannelIdxWithinGroup = j;
 										selectedChannelName = channelIterator->name;
 										selectedChannelTopic = channelIterator->topic;
+										EnterCriticalSection(&globalContentAreaDataCS);
 										globalMessageList = &(channelIterator->messages);
+										LeaveCriticalSection(&globalContentAreaDataCS);
 
 										//Update the content area
 										InvalidateRect(hwndContentArea, NULL, TRUE);
@@ -3291,6 +3296,7 @@ void updateServerListScrollbar() {
 
 LRESULT CALLBACK contentAreaProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
+	EnterCriticalSection(&globalContentAreaDataCS);
 	HDC hdc;
 	PAINTSTRUCT ps;
 	RECT rect;
@@ -3309,12 +3315,15 @@ LRESULT CALLBACK contentAreaProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 	switch (msg) {
 		case WM_NCCREATE:
 			pData = new ContentAreaData();
-			if (pData == NULL) return FALSE;
+			if (pData == NULL) {
+				LeaveCriticalSection(&globalContentAreaDataCS);
+				return FALSE;
+			}
 			globalContentAreaData = pData;
 			SetWindowLongPtr(wnd, 0, (LONG_PTR)pData);
 			pData->scrollPos = 0;
 			pData->totalContentHeight = 0;
-			
+			LeaveCriticalSection(&globalContentAreaDataCS);
 			return TRUE;
 		break;
 		case WM_CREATE:
@@ -3544,6 +3553,7 @@ LRESULT CALLBACK contentAreaProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 			}
 			SelectObject(hdc, originalGDIObj);
 			EndPaint(wnd, &ps);
+			LeaveCriticalSection(&globalContentAreaDataCS);
 			return 0;
 		break;
 		case WM_MOUSEMOVE:
@@ -3555,6 +3565,7 @@ LRESULT CALLBACK contentAreaProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 			{
 				
 			}
+			LeaveCriticalSection(&globalContentAreaDataCS);
 			return 0;
 		break;
 		case WM_LBUTTONDOWN:
@@ -3667,6 +3678,7 @@ LRESULT CALLBACK contentAreaProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 					//UpdateWindow(wnd);
 					pData->scrollPos = si.nPos;
 				}
+				LeaveCriticalSection(&globalContentAreaDataCS);
 				return 0;
 			}
 		break;
@@ -3687,16 +3699,20 @@ LRESULT CALLBACK contentAreaProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 
 				//Background when empty
 				SetDCBrushColor(hdc, RGB(64, 68, 75));
+				LeaveCriticalSection(&globalContentAreaDataCS);
 				return (LRESULT)GetStockObject(DC_BRUSH);
 			}
 		break;
 		case WM_DESTROY:
 			DestroyWindow(messageField);
+			LeaveCriticalSection(&globalContentAreaDataCS);
 			return 0;
 		break;
 		default:
+			LeaveCriticalSection(&globalContentAreaDataCS);
 			return DefWindowProcW(wnd, msg, wParam, lParam);
 	}
+	LeaveCriticalSection(&globalContentAreaDataCS);
 	return DefWindowProcW(wnd, msg, wParam, lParam);
 }
 
@@ -4042,6 +4058,7 @@ void submitMessage() {
 void recalculateTotalMessageHeight(bool addLastMessageHeight) {
 	unsigned long long totalContentHeight = 0;
 	if (globalMessageList == NULL) return;
+	EnterCriticalSection(&globalContentAreaDataCS);
 	unsigned int topMessageHeight, bottomMessageHeight;
 	unsigned int idx = 0;
 	for (auto i = globalMessageList->begin(); i != globalMessageList->end(); i++) {
@@ -4052,6 +4069,7 @@ void recalculateTotalMessageHeight(bool addLastMessageHeight) {
 		totalContentHeight += topMessageHeight;
 		idx++;
 	}
+	LeaveCriticalSection(&globalContentAreaDataCS);
 	totalContentHeight += (topMessageHeight*3); //TODO: fix the issue where the content area is partially filled, new messages are added, and it becomes impossible to scroll to the top one
 	globalContentAreaData->totalContentHeight = totalContentHeight;// + (topMessageHeight*3);
 
@@ -4819,7 +4837,7 @@ void addMessageToDataModel(uint64_t serverID, uint64_t channelID, uint64_t messa
 			}
 		}
 	} else */{
-		//We have to do an exhaustive search for the channel
+		/*//We have to do an exhaustive search for the channel
 		EnterCriticalSection(&globalServerListDataCS);
 		bool foundChannel = false;
 		for (auto it = begin(globalServerListData->dataModel); it != end(globalServerListData->dataModel) && !foundChannel; ++it) { //Servers
@@ -4837,7 +4855,19 @@ void addMessageToDataModel(uint64_t serverID, uint64_t channelID, uint64_t messa
 				}
 			}
 		}
-		LeaveCriticalSection(&globalServerListDataCS);
+		LeaveCriticalSection(&globalServerListDataCS);*/
+		
+		//Only handle the message if it was posted to the current channel
+		if (serverID == selectedServer && channelID == selectedChannel) {
+			EnterCriticalSection(&globalContentAreaDataCS);
+			globalMessageList->insert(globalMessageList->begin(), m);
+			LeaveCriticalSection(&globalContentAreaDataCS);
+			//Redraw the content area
+			recalculateTotalMessageHeight(true);
+			SendMessage(hwndContentArea, WM_SIZE, NULL, NULL);
+			InvalidateRect(hwndContentArea, NULL, TRUE);
+			UpdateWindow(hwndContentArea);
+		}
 	}
 }
 
@@ -4851,7 +4881,7 @@ void deleteMessageFromDataModel(uint64_t serverID, uint64_t channelID, uint64_t 
 				break;
 			}
 		}
-	} else */{
+	} else *//*{
 		//We have to do an exhaustive search for the channel
 		bool foundMessage = false;
 		//string message = "Deleting message, server ";message += to_string(serverID);message += ", Channel ";message += to_string(channelID);message += ", Message ";message += to_string(messageID);MessageBoxA(NULL, message.c_str(), "", MB_OK);
@@ -4870,6 +4900,21 @@ void deleteMessageFromDataModel(uint64_t serverID, uint64_t channelID, uint64_t 
 				}
 			}
 		}
+	}*/
+	
+	//Only handle the message if it was posted to the current channel
+	if (serverID == selectedServer && channelID == selectedChannel) {
+		EnterCriticalSection(&globalContentAreaDataCS);
+		for (auto messageIterator = globalMessageList->begin(); messageIterator != globalMessageList->end(); ++messageIterator) {
+			if (messageIterator->id == messageID) messageIterator->deleted = true;
+			break;
+		}
+		LeaveCriticalSection(&globalContentAreaDataCS);
+		//Redraw the content area
+		recalculateTotalMessageHeight(true);
+		SendMessage(hwndContentArea, WM_SIZE, NULL, NULL);
+		InvalidateRect(hwndContentArea, NULL, TRUE);
+		UpdateWindow(hwndContentArea);
 	}
 }
 
