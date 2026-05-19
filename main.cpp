@@ -112,6 +112,7 @@ void loadServerIcon(uint64_t serverID, wstring filename);
 void addUserToGlobalUserList(uint64_t userID, wstring username, wstring display_name);
 void updateServerListScrollbar();
 void redrawServerList();
+void getInitialChannelMessages(uint64_t channelID, string channelName, uint16_t pages = 1);
 
 //Contains a font fix provided by "Christopher Janzon" on stackoverflow.com
 //https://stackoverflow.com/a/17075471
@@ -425,7 +426,7 @@ bool shouldStopDownloadManager = false;
 static CryptoPP::SHA3_256* currentHash = NULL;
 static string currentHashString;
 
-unsigned char hexCharacters[] = {'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F'};
+unsigned const char hexCharacters[] = {'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F'};
 string bytesToHex(string input) {
 	string output = "";
 	
@@ -1141,6 +1142,7 @@ static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *use
 								int channelsArraySize;
 								//Iterate over servers
 								
+								bool foundFirstTextChannel = false;
 								for (int h = 0; h < guildsArraySize; h++) {
 									Value& guildObject = guildsArray[h];
 									server.id = stoull(guildObject["id"].GetString());
@@ -1181,6 +1183,15 @@ static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *use
 											c.voiceChannel = (channelType == 2);
 											//logFile << endl << "Server \"" << server.name << "\", category \"Text Channels\", channel " << c.name;
 											defaultCG.channels.push_back(c);
+											
+											//Open the first text channel within the first server so the content area isn't blank
+											if (!foundFirstTextChannel && channelType == 0) {
+												selectedChannel = c.id;
+												selectedChannelName = c.name;
+												selectedChannelTopic = c.topic;
+												foundFirstTextChannel = true;
+											}
+											
 											addChannelToLog(server.id, c.id, c.name, 0, c.topic, channelType, wstring_to_utf8(currentTimestamp));
 											continue;
 										}
@@ -1199,6 +1210,15 @@ static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *use
 											c.voiceChannel = (channelType == 2);
 											//logFile << endl << "Server \"" << server.name << "\", category \"" << cg.name << "\", channel " << c.name;
 											cg.channels.push_back(c);
+											
+											//Open the first text channel within the first server so the content area isn't blank
+											if (!foundFirstTextChannel && channelType == 0) {
+												selectedChannel = c.id;
+												selectedChannelName = c.name;
+												selectedChannelTopic = c.topic;
+												foundFirstTextChannel = true;
+											}
+											
 											addChannelToLog(server.id, c.id, c.name, categoryID, c.topic, channelType, wstring_to_utf8(currentTimestamp));
 										} //for (int j = 0; j < channelsArraySize; j++) {
 										server.dataModel.push_back(cg);
@@ -1223,6 +1243,22 @@ static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *use
 								globalLeftSidebarData->dataModelPtr = &(begin(globalServerListData->dataModel)->dataModel);
 								LeaveCriticalSection(&globalLeftSidebarDataCS);
 								
+								/*//Open the first text channel within the first server so the content area isn't blank
+								bool shouldStopSearchingForFirstTextChannel = false;
+								for (auto i0 = globalServerListData->dataModel.begin(); !shouldStopSearchingForFirstTextChannel && i0 != globalServerListData->dataModel.end(); ++i0) {
+									for (auto i1 = i0->dataModel.begin(); !shouldStopSearchingForFirstTextChannel && i1 != i0->dataModel.end(); ++i1) {
+										for (auto i2 = i1->channels.begin(); i2 != i1->channels.end(); ++i2) {
+											if (!i2->voiceChannel) {
+												selectedChannel = i2->id;
+												selectedChannelName = i2->name;
+												selectedChannelTopic = i2->topic;
+												shouldStopSearchingForFirstTextChannel = true;
+												break;
+											}
+										}
+									}
+								}*/
+								
 								//Update the channel list scrollbar
 								SendMessage(hwndLeftSidebar, WM_SIZE, NULL, NULL);
 								
@@ -1234,6 +1270,7 @@ static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *use
 									LeaveCriticalSection(&downloadManagerJobsCS);
 								}
 								tempDownloadManagerJobs.clear();
+								getInitialChannelMessages(selectedChannel, selectedChannelName);
 								//Unlock the data model
 								LeaveCriticalSection(&globalServerListDataCS);
 								updateServerListScrollbar();
@@ -1241,6 +1278,11 @@ static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *use
 								//Redraw the left sidebar
 								InvalidateRect(hwndLeftSidebar, NULL, TRUE);
 								UpdateWindow(hwndLeftSidebar);
+								
+								//Update the content area
+								SendMessage(hwndContentArea, WM_SIZE, NULL, NULL);
+								InvalidateRect(hwndContentArea, NULL, TRUE);
+								UpdateWindow(hwndContentArea);
 							}
 						} else if (t.compare("MESSAGE_CREATE") == 0) {
 							//cout << endl << "MESSAGE_CREATE: \"" << responseJSON["d"]["content"].GetString() << "\"";
@@ -1712,7 +1754,7 @@ LRESULT CALLBACK WndProc( HWND hwndMainWin, UINT msg, WPARAM wParam, LPARAM lPar
 			if (windowRectIsValid) {
 				statusBarParts[0] = 100;
 				statusBarParts[1] = 620;
-				statusBarParts[2] = 720;
+				statusBarParts[2] = 820;
 				SendMessage(statusBar, SB_SETPARTS, 3, (LPARAM)&statusBarParts);
 				InvalidateRect(hwndMainWin, NULL, true);
 			}
@@ -2468,7 +2510,7 @@ LRESULT CALLBACK leftSidebarProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 										EnterCriticalSection(&globalContentAreaDataCS);
 										globalMessageList = &(channelIterator->messages);
 										LeaveCriticalSection(&globalContentAreaDataCS);
-
+										getInitialChannelMessages(selectedChannel, selectedChannelName);
 										//Update the content area
 										InvalidateRect(hwndContentArea, NULL, TRUE);
 									} else {
@@ -3609,7 +3651,9 @@ LRESULT CALLBACK contentAreaProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lPara
 				messageWidth = w - 146;
 				//Only recalculate the total message height if the width changed
 				if (w != pData->oldContentAreaWidth) {
+					LeaveCriticalSection(&globalContentAreaDataCS);
 					recalculateTotalMessageHeight(false);
+					EnterCriticalSection(&globalContentAreaDataCS);
 					pData->oldContentAreaWidth = w;
 				}
 				MoveWindow(pData->hwndScrollbar, r.right - 15, 48, 15, h - 48, TRUE);
@@ -4635,7 +4679,7 @@ int UTF8CodepointIsEmoji(int codepoint) {
 }
 
 int UTF8ToCodepoint(unsigned char* byteArray, unsigned int *charLength, unsigned int maxBytes) {
-	wstring debug = L"UTF8ToCodepoint operating on starting byte " + to_wstring((long long)*byteArray) + L" with " + to_wstring((long long)maxBytes) + L" bytes remaining";
+	//wstring debug = L"UTF8ToCodepoint operating on starting byte " + to_wstring((long long)*byteArray) + L" with " + to_wstring((long long)maxBytes) + L" bytes remaining";
 	//MessageBox(NULL, debug.c_str(), L"", MB_OK);
 	//Returns the codepoint, or -1 if there was an error.
 	//charLength will contain the number of bytes consumed.
@@ -4972,6 +5016,8 @@ void addMessageToLog(GenericValue<UTF8<>> *messageJSON) {
 	//Skip messages without content
 	if ((*messageJSON).FindMember("content") == (*messageJSON).MemberEnd()) return;
 	uint64_t guildID = 0;
+	
+	//There is no guild ID for the HTTP GET "messages" endpoint used when the user clicks a channel
 	if ((*messageJSON).FindMember("guild_id") != (*messageJSON).MemberEnd() && (*messageJSON)["guild_id"].IsString()) {
 		guildID = stoull((*messageJSON)["guild_id"].GetString());
 	} else if ((*messageJSON).FindMember("author") != (*messageJSON).MemberEnd() && (*messageJSON)["author"].FindMember("guild_id") != (*messageJSON)["author"].MemberEnd() && (*messageJSON)["author"]["guild_id"].IsString()) {
@@ -5137,6 +5183,7 @@ void addMessageToLog(GenericValue<UTF8<>> *messageJSON) {
 		dmj.db = loggingDatabasePtr;//it->db;
 		dmj.objectID = authorID;
 		dmj.objectType = 1 /* avatar */;
+		//logFile << endl << "addMessageToLog() downloading avatar for user " << dmj.objectID << ", URL " << wstring_to_utf8(dmj.url);
 		EnterCriticalSection(&downloadManagerJobsCS);
 		downloadManagerJobs.push_back(dmj);
 		LeaveCriticalSection(&downloadManagerJobsCS);
@@ -5443,4 +5490,110 @@ void redrawServerList() {
 	//InvalidateRect(hwndServerList, NULL, true);
 	//RedrawWindow(hwndServerList, NULL, NULL, RDW_UPDATENOW | RDW_ALLCHILDREN | RDW_INVALIDATE | RDW_INVALIDATE | RDW_INTERNALPAINT);
 	//UpdateWindow(hwndServerList);
+}
+
+static string getInitialChannelMessagesJSONData;
+static size_t getInitialChannelMessagesWriteFunction(char *contents, size_t size, size_t nmemb, void *userp) {
+	size_t realsize = size * nmemb;
+	
+	getInitialChannelMessagesJSONData += string(contents, realsize);
+	
+	return realsize;
+}
+
+void getInitialChannelMessages(uint64_t channelID, string channelName, uint16_t pages /* = 1 */) {
+	//https://discord.com/api/v9/channels/809633714178359306/messages?limit=11
+	/*struct Message {
+		unsigned long long id;
+		unsigned long long authorID;
+		int messageHeight;
+		string text;
+		bool deleted;
+		Message():id(0),authorID(0),messageHeight(0),text(""),deleted(false){}
+	};*/
+	wstring statusBarMessage = L"";
+	
+	string lastMessageID = "";
+	EnterCriticalSection(&globalContentAreaDataCS);
+	if (globalMessageList != NULL) globalMessageList->clear();
+	LeaveCriticalSection(&globalContentAreaDataCS);
+	CURL *getMessagesCurlObject = curl_easy_init();
+	if (getMessagesCurlObject) {
+		struct curl_slist *headers = NULL;
+		headers = curl_slist_append(headers, "Content-Type: application/json");
+		string authorization = "Authorization: " + wstring_to_utf8(config.authToken);
+		headers = curl_slist_append(headers, authorization.c_str());
+		string userAgent = wstring_to_utf8(getUserAgent());
+		curl_easy_setopt(getMessagesCurlObject, CURLOPT_HTTPHEADER, headers);
+		curl_easy_setopt(getMessagesCurlObject, CURLOPT_USERAGENT, userAgent.c_str());
+		//curl_easy_setopt(getMessagesCurlObject, CURLOPT_POSTFIELDS, json.c_str());
+		curl_easy_setopt(getMessagesCurlObject, CURLOPT_WRITEFUNCTION, getInitialChannelMessagesWriteFunction);
+		curl_easy_setopt(getMessagesCurlObject, CURLOPT_CAINFO, "cacert.pem");
+		curl_easy_setopt(getMessagesCurlObject, CURLOPT_VERBOSE, 1L);
+		for (int j = 0; j < pages; j++) {
+			statusBarMessage = L"Loading messages for \"" + utf8_to_wstring(channelName) + L"\"... (page " + to_wstring((long long)(j + 1)) + L"/" + to_wstring((long long)pages) + L")";
+			SendMessage(statusBar, SB_SETTEXT, 1, (LPARAM)statusBarMessage.c_str());
+			getInitialChannelMessagesJSONData = "{\"messages\": ";
+			string url = DiscordAPIBaseURL + "/channels/" + to_string(channelID) + "/messages";
+			if (j > 0) url += "?before=" + lastMessageID;
+			
+			curl_easy_setopt(getMessagesCurlObject, CURLOPT_URL, url.c_str());
+			curl_easy_perform(getMessagesCurlObject);
+			getInitialChannelMessagesJSONData += "}";
+			
+			SendMessage(statusBar, SB_SETTEXT, 1, NULL);
+			
+			{
+				Document messagesDocument;
+				messagesDocument.Parse(getInitialChannelMessagesJSONData.c_str());
+				if (!messagesDocument.HasParseError() && messagesDocument.IsObject() && !messagesDocument["messages"].IsNull() && messagesDocument["messages"].IsArray()) {
+					Value& messagesArray = messagesDocument["messages"];
+					//uint64_t messagesArraySize = messagesArray.Size();
+					//int i = 0;
+					EnterCriticalSection(&globalContentAreaDataCS);
+					for (rapidjson::Value::ValueIterator iter = messagesArray.Begin(); iter != messagesArray.End(); ++iter) {
+						//if (i < 5) MessageBox(NULL, utf8_to_wstring((*iter)["content"].GetString()).c_str(), L"", MB_OK);
+						if (!(*iter)["id"].IsNull() && (*iter)["id"].IsString() && !(*iter)["author"].IsNull() && (*iter)["author"].IsObject() && !(*iter)["author"]["id"].IsNull() && (*iter)["author"]["id"].IsString()) {
+							Message m;
+							lastMessageID = (*iter)["id"].GetString();
+							m.id = stoull(lastMessageID);
+							m.authorID = stoull((*iter)["author"]["id"].GetString());
+							m.text = (!(*iter)["content"].IsNull() && (*iter)["content"].IsString()) ? (*iter)["content"].GetString() : "";
+							//logFile << endl << "Extracted data for message " << m.id << ": \"" << m.text << "\", authorID=" << m.authorID << ", messageHeight=" <<  m.messageHeight << ", deleted=" << m.deleted;
+							globalMessageList->push_back(m); //For some reason, this sometimes hangs and maxes out a CPU and continuously allocates memory
+							//logFile << endl << "Finished adding message " << m.id;
+							
+							//Download the user avatars
+							if (!(*iter)["author"]["avatar"].IsNull() && (*iter)["author"]["avatar"].IsString()) {
+								string avatar = (*iter)["author"]["avatar"].GetString();
+								DownloadManagerJob dmj;
+								dmj.url = L"https://cdn.discordapp.com/avatars/" + to_wstring(m.authorID) + L"/" + utf8_to_wstring(avatar) + L".png";
+								dmj.filename = utf8_to_wstring(avatar) + L".png";
+								dmj.outputFolder = cacheDir;
+								dmj.replace = false;
+								dmj.db = NULL;
+								dmj.objectID = m.authorID;
+								dmj.objectType = 1 /* avatar */;
+								EnterCriticalSection(&downloadManagerJobsCS);
+								downloadManagerJobs.push_back(dmj);
+								LeaveCriticalSection(&downloadManagerJobsCS);
+							}
+						}
+						//logFile << endl << "getInitialMessages() about to download the avatar for user " << (*iter)["author"]["id"].GetString();
+						addMessageToLog(iter);
+						//i++;
+					}
+					LeaveCriticalSection(&globalContentAreaDataCS);
+				}
+			}
+		}
+		curl_slist_free_all(headers);
+		curl_easy_cleanup(getMessagesCurlObject);
+		getInitialChannelMessagesJSONData.clear();
+		recalculateTotalMessageHeight(true); //This locks the global content area critical section so we have to unlock it first
+		//Redraw the content area
+		SendMessage(hwndContentArea, WM_SIZE, NULL, NULL);
+		InvalidateRect(hwndContentArea, NULL, TRUE);
+		UpdateWindow(hwndContentArea);
+	}
 }
