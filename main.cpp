@@ -450,6 +450,7 @@ size_t downloadManagerWriteCallback(char* ptr, size_t size, size_t nmemb, void *
 }
 void downloadManagerThread(void* param) {
 	CURL *downloadManagerCurlObject = curl_easy_init();
+	bool loadedNewUserIcons = false;
 	if (downloadManagerCurlObject) {
 		while (!shouldStopDownloadManager) {
 			EnterCriticalSection(&downloadManagerJobsCS);
@@ -548,6 +549,7 @@ void downloadManagerThread(void* param) {
 						loadServerIcon(dmj->objectID, initialOutputFolder + dmj->filename);
 					} else {
 						loadUserIcon(dmj->objectID, initialOutputFolder + dmj->filename);
+						loadedNewUserIcons = true;
 					}
 				}
 				//}
@@ -555,6 +557,14 @@ void downloadManagerThread(void* param) {
 				LeaveCriticalSection(&downloadManagerJobsCS);
 			} else {
 				LeaveCriticalSection(&downloadManagerJobsCS);
+				
+				//Redraw the content area to add the user avatars when they're done loading
+				if (loadedNewUserIcons) {
+					SendMessage(hwndContentArea, WM_SIZE, NULL, NULL);
+					InvalidateRect(hwndContentArea, NULL, TRUE);
+					UpdateWindow(hwndContentArea);
+					loadedNewUserIcons = false;
+				}
 				Sleep(500);
 			}
 		}
@@ -805,6 +815,7 @@ bool loadOrCreateConfig() {
 			Value& loggingServerArray = configDocument["logging_servers"];
 			long long arraySize = loggingServerArray.Size();
 			
+			config.loggingServers.reserve(arraySize);
 			for (int i = 0; i < arraySize; i++) {
 				LoggingServer ls;
 				if (configDocument["logging_servers"][i].FindMember("enabled") != configDocument["logging_servers"][i].MemberEnd() && configDocument["logging_servers"][i]["enabled"].IsBool()) ls.enabled = configDocument["logging_servers"][i]["enabled"].GetBool();
@@ -860,6 +871,7 @@ bool loadOrCreateConfig() {
 				//cout << endl << ls.id << ", " << wstring_to_utf8(ls.name) << ", " << wstring_to_utf8(ls.filename);
 				config.loggingServers.push_back(ls);
 			}
+			config.loggingServers.shrink_to_fit();
 		}
 	}
 
@@ -1120,7 +1132,10 @@ static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *use
 								if (globalLeftSidebarData->dataModelPtr != NULL) globalLeftSidebarData->dataModelPtr->clear();
 								Value& guildsArray = responseJSON["d"]["guilds"];
 								long long guildsArraySize = guildsArray.Size();
-								if (guildsArraySize > 0) globalServerListData->dataModel.clear(); //Don't duplicate the server list if Discord sends it again
+								if (guildsArraySize > 0) {
+									globalServerListData->dataModel.clear(); //Don't duplicate the server list if Discord sends it again
+									globalServerListData->dataModel.reserve(guildsArraySize);
+								}
 								ServerListItem server;
 								server.hbmIcon = NULL;
 								ChannelGroup cg;
@@ -1201,6 +1216,7 @@ static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *use
 										cg.id = categoryID;
 										cg.name = guildObject["channels"][i]["name"].GetString();
 										//Iterate over the channel objects to get the channels
+										cg.channels.reserve(channelsArraySize);
 										for (int j = 0; j < channelsArraySize; j++) {
 											channelType = guildObject["channels"][j]["type"].GetInt();
 											if ((guildObject["channels"][j].FindMember("parent_id") == guildObject["channels"][j].MemberEnd() || !guildObject["channels"][j]["parent_id"].IsString() || stoull(guildObject["channels"][j]["parent_id"].GetString(), NULL, 10) != categoryID) || (channelType != 0 /* GUILD_TEXT */ && channelType != 2 /* GUILD_VOICE */)) continue;
@@ -1221,6 +1237,7 @@ static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *use
 											
 											addChannelToLog(server.id, c.id, c.name, categoryID, c.topic, channelType, wstring_to_utf8(currentTimestamp));
 										} //for (int j = 0; j < channelsArraySize; j++) {
+										cg.channels.shrink_to_fit();
 										server.dataModel.push_back(cg);
 										addCategoryToLog(server.id, cg.id, cg.name, wstring_to_utf8(currentTimestamp));
 										cg.channels.clear();
@@ -1235,7 +1252,8 @@ static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *use
 									EnterCriticalSection(&globalServerListDataCS);
 									defaultCG.channels.clear();
 									server.dataModel.clear();
-								}
+								} //for (int h = 0; h < guildsArraySize; h++) {
+								globalServerListData->dataModel.shrink_to_fit();
 								//Open the first server so the left sidebar isn't blank
 								selectedServer = begin(globalServerListData->dataModel)->id;
 								selectedServerName = begin(globalServerListData->dataModel)->name;
@@ -1264,11 +1282,14 @@ static size_t websocketCallback(void *data, size_t size, size_t nmemb, void *use
 								
 								SendMessage(statusBar,SB_SETTEXT, 1, NULL);
 								//We can start downloading the server icons now
+								EnterCriticalSection(&downloadManagerJobsCS);
+								downloadManagerJobs.reserve(tempDownloadManagerJobs.size());
 								for (int i = 0; i < tempDownloadManagerJobs.size(); i++) {
-									EnterCriticalSection(&downloadManagerJobsCS);
+									if (i > 0) EnterCriticalSection(&downloadManagerJobsCS);
 									downloadManagerJobs.push_back(tempDownloadManagerJobs[i]);
 									LeaveCriticalSection(&downloadManagerJobsCS);
 								}
+								LeaveCriticalSection(&downloadManagerJobsCS);
 								tempDownloadManagerJobs.clear();
 								getInitialChannelMessages(selectedChannel, selectedChannelName);
 								//Unlock the data model
@@ -5501,6 +5522,17 @@ static size_t getInitialChannelMessagesWriteFunction(char *contents, size_t size
 	return realsize;
 }
 
+//Copied from user "Gauthier Boaglio" on StackOverflow
+//https://stackoverflow.com/a/24315631
+string ReplaceAll(string str, const string& from, const string& to) {
+    size_t start_pos = 0;
+    while((start_pos = str.find(from, start_pos)) != string::npos) {
+        str.replace(start_pos, from.length(), to);
+        start_pos += to.length(); // Handles case where 'to' is a substring of 'from'
+    }
+    return str;
+}
+
 void getInitialChannelMessages(uint64_t channelID, string channelName, uint16_t pages /* = 1 */) {
 	//https://discord.com/api/v9/channels/809633714178359306/messages?limit=11
 	/*struct Message {
@@ -5516,7 +5548,7 @@ void getInitialChannelMessages(uint64_t channelID, string channelName, uint16_t 
 	string lastMessageID = "";
 	EnterCriticalSection(&globalContentAreaDataCS);
 	if (globalMessageList != NULL) globalMessageList->clear();
-	LeaveCriticalSection(&globalContentAreaDataCS);
+	LeaveCriticalSection(&globalContentAreaDataCS); //Release this so the content area can be repainted while we're waiting for the HTTP request
 	CURL *getMessagesCurlObject = curl_easy_init();
 	if (getMessagesCurlObject) {
 		struct curl_slist *headers = NULL;
@@ -5541,6 +5573,11 @@ void getInitialChannelMessages(uint64_t channelID, string channelName, uint16_t 
 			curl_easy_perform(getMessagesCurlObject);
 			getInitialChannelMessagesJSONData += "}";
 			
+			//Sanitize the data since the homoglyphs (higher Unicode characters that look like English ASCII) used by scammers can somehow crash the vector and string functions and cause an infinite loop that maxes out 1 CPU when we use push_back()
+			//This occurs no matter what string they're in, even ones we don't currently use, for example referencedMessage.content
+			//Using Windows XP or 8.1, RapidJSON vs. picojson, indices vs. iterators, list vs. vector, or copying the string to a new one makes no difference
+			getInitialChannelMessagesJSONData = ReplaceAll(getInitialChannelMessagesJSONData, "\\u", "\\\\u");
+			
 			SendMessage(statusBar, SB_SETTEXT, 1, NULL);
 			
 			{
@@ -5551,6 +5588,7 @@ void getInitialChannelMessages(uint64_t channelID, string channelName, uint16_t 
 					//uint64_t messagesArraySize = messagesArray.Size();
 					//int i = 0;
 					EnterCriticalSection(&globalContentAreaDataCS);
+					globalMessageList->reserve(messagesArray.Size()); //Pre-allocate memory for the message objects
 					for (rapidjson::Value::ValueIterator iter = messagesArray.Begin(); iter != messagesArray.End(); ++iter) {
 						//if (i < 5) MessageBox(NULL, utf8_to_wstring((*iter)["content"].GetString()).c_str(), L"", MB_OK);
 						if (!(*iter)["id"].IsNull() && (*iter)["id"].IsString() && !(*iter)["author"].IsNull() && (*iter)["author"].IsObject() && !(*iter)["author"]["id"].IsNull() && (*iter)["author"]["id"].IsString()) {
@@ -5583,6 +5621,7 @@ void getInitialChannelMessages(uint64_t channelID, string channelName, uint16_t 
 						addMessageToLog(iter);
 						//i++;
 					}
+					globalMessageList->shrink_to_fit(); //Free unused memory if some of the message objects were invalid and not added
 					LeaveCriticalSection(&globalContentAreaDataCS);
 				}
 			}
